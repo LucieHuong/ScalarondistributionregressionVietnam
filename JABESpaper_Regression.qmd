@@ -1,0 +1,1819 @@
+---
+title: "Scalar-on-distribution regression for assessing the impact of climate change on rice yield in Vietnam"
+author: "Thi Huong TRINH; Christine Thomas-Agnan; Michel Simioni"
+format:
+  html:
+    toc: true
+    embed-resources: true
+    self-contained-math: true
+    self-contained: true
+    code-fold: true
+    code-summary: "Show the code"
+    number-sections: true
+    standalone: true
+---
+
+# Load data
+
+```{r setup,include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+options(scipen = 999)
+```
+
+```{r}
+##=================================Load Packages ===============================
+
+library(ggplot2)         
+library(tidyverse) 
+require(splines)
+require(robCompositions)
+require(compositions)
+library(reshape2)
+require(gridExtra)
+library(RColorBrewer)
+require(viridis)
+require(spdep)
+require(stringr)
+library("CoDaImpact")
+##=================================Load data ===============================
+
+load("rain_dataALL.RData")
+load("LtmaxALL.RData") # raw data tmax
+load("LtminALL.RData") #raw data tmin
+load("AlphaALL_tmin.RData")# smoothing alpha parameter for tmin
+load("AlphaALL_tmax.RData") # smoothing alpha parameter for tmax
+load("Rice.RData")
+load("CFR.tmaxB1K11.RDATA") # ZB basis for 11 knots (9 inside knots)
+load("CBsplinesB1K11.RDATA")# CB basis for 11 knots (9 inside knots)
+load("CFR.tmaxB1K9.RDATA")# ZB basis for 9 knots (7 inside knots)
+load("CBsplinesB1K9.RDATA")# CB basis for 9 knots (7 inside knots)
+load("CFR.tminB1K11.RDATA") # ZB basis for 11 knots (9 inside knots)
+load("clrfdetailALLTmin.RDATA") # Smooth spline for tmin
+load("clrfdetailALL.RDATA")# Smooth spline for tmax
+load("DATA_ALL_clrinv.RDATA")
+load("DATA_ALL_clrinvTmin.RDATA")
+load("Clim_Oct22Tmax.RDATA") # Coda vector for tmax
+load("Clim_Oct22Tmin.RDATA")# Coda vector for tmin
+load( "CMIP5tminALL.RDATA") # Tmin in 2099
+load( "CMIP5tmaxALL.RDATA")# Tmax in 2099
+load("evalAlltmin_Dif.RDATA")# p_il for tmin
+load("evalAlltmax_Dif.RDATA")# p_il for tmax
+source("FunctionCRF_V6_bin1_11knots.R") 
+```
+
+```{r}
+#Save for later
+Clim_Oct22Tmax0 <- Clim_Oct22Tmax
+Clim_Oct22Tmin0 <- Clim_Oct22Tmin
+
+#-===================Prepare data
+
+Rice <- Rice %>% mutate(SR = ifelse(Region == " Southeastern Area" , 1, 0),
+                        MDR = ifelse(Region == "Mekong Delta" , 1, 0),
+                        NMM = ifelse(Region == "Midlands and Northern Mountainous Areas" , 1, 0), 
+                        RRD = ifelse(Region == "Red River Delta" , 1, 0), 
+                        NCC = ifelse(Region == "Northern and Coastal Central Region" , 1, 0),
+                        CHR = ifelse(Region == "Central Highlands" , 1, 0))
+
+C_Sigma_tmax <- unique(AlphaALL_tmax[, c("year",  "PRO" )])
+
+nZBbeta <- dim(DATA_ALL_clrinv[["tmax"]][["1987"]][["HANOI"]]$C_Sigma)[2] # 1x16
+
+ccols <- paste0("x", seq(1, nZBbeta , by = 1))
+C_Sigma_tmax[, ccols] <- NA
+
+for (y in 1987:2016)
+  for (p in C_Sigma_tmax[C_Sigma_tmax$year == y, ]$PRO)
+  {
+    y <- as.character(y)
+    C_Sigma_tmax[C_Sigma_tmax$year == y & C_Sigma_tmax$PRO == p, ccols] <-
+      DATA_ALL_clrinv[["tmax"]][[y]][[p]]$C_Sigma
+  }
+
+
+names(C_Sigma_tmax)[2] <- "province"
+
+names(C_Sigma_tmax)[3:(3+nZBbeta-1)] <- paste0(names(C_Sigma_tmax)[3:(3+nZBbeta-1)], "tmax")
+
+
+RiceALL <- left_join(Rice, C_Sigma_tmax)
+rain_dataALL$Region <- NULL
+RiceALL <- left_join(RiceALL , rain_dataALL)
+RiceALL$year_conti <- as.numeric(RiceALL$year) 
+RiceALL$year_conti <- RiceALL$year_conti - 1986 
+```
+
+```{r}
+
+listyear <- c( "1987","1988","1989","1990","1991","1992","1993","1994","1995","1996",
+               "1997","1998","1999","2000","2001","2002","2003","2004","2005","2006",
+               "2007","2008","2009","2010","2011","2012","2013","2014","2015","2016")
+
+C_Sigma_tmin <- unique(AlphaALL_tmin[, c("year",  "PRO" )])
+
+nZBbetaTmin <- dim(DATA_ALL_clrinvTmin[["tmin"]][["1987"]][["HANOI"]]$C_Sigma)[2] # 1x16
+ccolsTmin <- paste0("x", seq(1, nZBbetaTmin , by = 1))
+C_Sigma_tmin[, ccolsTmin] <- NA
+
+for (y in 1987:2016)
+  for (p in C_Sigma_tmin[C_Sigma_tmin$year == y, ]$PRO)
+  {
+    y <- as.character(y)
+    C_Sigma_tmin[C_Sigma_tmin$year == y & C_Sigma_tmin$PRO == p, ccolsTmin] <-
+      DATA_ALL_clrinvTmin[["tmin"]][[y]][[p]]$C_Sigma
+  }
+
+names(C_Sigma_tmin)[2] <- "province"
+
+names(C_Sigma_tmin)[3:(3+nZBbetaTmin-1)] <- paste0(names(C_Sigma_tmin)[3:(3+nZBbetaTmin-1)], "tmin")
+RiceALL <- left_join(RiceALL, C_Sigma_tmin)
+
+```
+
+
+# Regression
+
+```{r}
+
+Clim_Oct22Tmax <- Clim_Oct22Tmax0
+Clim_Oct22Tmin <- Clim_Oct22Tmin0
+
+names(Clim_Oct22Tmin)[3:24] <- paste0(names(Clim_Oct22Tmin)[3:24], "tmin")
+
+ncoldclim <- dim(Clim_Oct22Tmax)[2]
+
+RiceALL$pro <- RiceALL$province
+Clim_Oct22Tmax <- left_join(Clim_Oct22Tmax, RiceALL[, c( "yield", "year", "area", "YIELDF", "Region", "SR", "MDR" , "NMM" , "RRD" , "NCC" ,"CHR", "Precipitation", "year_conti", "pro" )])
+
+Clim_Oct22Tmax <- left_join(Clim_Oct22Tmax, Clim_Oct22Tmin)
+
+Clim_Oct22Tmax$histc28 = compositions::clo(Clim_Oct22Tmax[3:ncoldclim])
+Clim_Oct22Tmax$histc22tmin = compositions::clo(Clim_Oct22Tmax[43:64])
+```
+
+## The scalar on composition regression model
+
+```{r}
+mod_compo28 = lm(YIELDF ~  year_conti + Precipitation +
+                   SR + MDR +NMM+
+                   NCC+ RRD+
+                   compositions::ilr(histc28 )+ 
+                   compositions::ilr(histc22tmin)+
+                      compositions::ilr(histc28 )*NCC+
+                   compositions::ilr(histc28 )*RRD, 
+                 data = Clim_Oct22Tmax)
+```
+
+## The simple model
+
+```{r}
+
+Clim_Oct22Tmax$TminAve <- NA
+Clim_Oct22Tmax$TmaxAve <- NA
+for (year1 in names(LtmaxALL))
+{
+  for (proj0 in names(LtmaxALL[[year1]]))
+  {
+    Clim_Oct22Tmax[Clim_Oct22Tmax$year == year1 & Clim_Oct22Tmax$pro == proj0 , "TmaxAve"] <-
+      mean(LtmaxALL[[year1]][[proj0]]$tmaxALL)
+    Clim_Oct22Tmax[Clim_Oct22Tmax$year == year1 & Clim_Oct22Tmax$pro == proj0 , "TminAve"] <-
+      mean(LtminALL[[year1]][[proj0]]$tminALL)
+  }
+}
+
+mod_compo28_Ave = lm(YIELDF ~  year_conti + Precipitation +
+                   SR + MDR +NMM+
+                   NCC+ RRD+
+                     TmaxAve+ 
+                     TminAve+
+                   # compositions::ilr(histc28 )*MDR +
+                     TmaxAve*NCC+
+                     TmaxAve*RRD, 
+                 data = Clim_Oct22Tmax)
+summary(mod_compo28_Ave )
+
+```
+
+## Schlenker and Roberts’ model
+
+```{r}
+mod_Schlenker <- lm(YIELDF ~  year_conti + Precipitation +
+             SR + MDR +NMM+
+             NCC+ RRD+ #  s1  + s1tmin +
+              s2 + s3 + s4 + s5 + s6 + s7 + s8 + s9  + s10 + s11 + s12 + s13 + s14 + s15 +
+  s16 + s17 + s18 + s19 +s20 + s21 + s22 + s23 + s24 + s25 + s26 + s27 +s28 +
+    s2tmin + s3tmin + s4tmin + s5tmin + s6tmin + s7tmin + s8tmin + s9tmin +
+    s10tmin + s11tmin + s12tmin + s13tmin + s14tmin + s15tmin + s16tmin + s17tmin + 
+  s18tmin + s19tmin + s20tmin + s21tmin + s22tmin+
+    s2*NCC + s3*NCC + s4*NCC + 
+    s5*NCC + s6*NCC + s7*NCC + 
+    s8*NCC + s9*NCC  + s10*NCC +
+    s11*NCC + s12*NCC + s13*NCC + 
+    s14*NCC + s15*NCC +  s16*NCC + 
+    s17*NCC + s18*NCC + s19*NCC +
+    s20*NCC + s21*NCC + s22*NCC +
+    s23*NCC + s24*NCC + s25*NCC + 
+    s26*NCC + s27*NCC +s28*NCC +
+    s2*RRD + s3*RRD + s4*RRD + 
+    s5*RRD + s6*RRD + s7*RRD + 
+    s8*RRD + s9*RRD  + s10*RRD +
+    s11*RRD + s12*RRD + s13*RRD + 
+    s14*RRD + s15*RRD +  s16*RRD + 
+    s17*RRD + s18*RRD + s19*RRD +
+    s20*RRD + s21*RRD + s22*RRD +
+    s23*RRD + s24*RRD + s25*RRD + 
+    s26*RRD + s27*RRD +s28*RRD,
+  data = Clim_Oct22Tmax)
+summary(mod_Schlenker)
+```
+
+```{r}
+
+namebinlist <- c("12-13", "13-14", "14-15", "15-16", "16-17", "17-18",
+                 "18-19", "19-20", "20-21", "21-22", "22-23",
+                 "23-24", "24-25", "25-26", "26-27",
+                 "27-28", "28-29", "29-30", "30-31", "31-32", "32-33",
+                 "33-34", "34-35", "35-36", "36-37",
+                 "37-38", "38-39", "39-40")
+betahistS_other = compositions::ilrInv(mod_compo28$coefficients[9:35])
+
+Coef.Raw.clr_other <- compositions::clr(betahistS_other )
+
+Coef.Raw.clr_other <- data.frame(Coef.Raw.clr = as.numeric(Coef.Raw.clr_other),
+                                 namebinlist = namebinlist)
+
+coef_NCC_discrete <-  mod_compo28$coefficients[9:35] + mod_compo28$coefficients[57:83]
+coef_RRD_discrete <-  mod_compo28$coefficients[9:35] + mod_compo28$coefficients[84:110]
+coef_other_discrete <-  mod_compo28$coefficients[9:35]
+
+betahistS_RRD = compositions::ilrInv(coef_RRD_discrete) # S^28
+Coef.Raw.clr_RRD <- compositions::clr(betahistS_RRD )
+Coef.Raw.clr_RRD <- data.frame(Coef.Raw.clr = as.numeric(Coef.Raw.clr_RRD),
+                               namebinlist = namebinlist)
+
+betahistS_NCC = compositions::ilrInv(coef_NCC_discrete) # S^28
+Coef.Raw.clr_NCC <- compositions::clr(betahistS_NCC )
+Coef.Raw.clr_NCC <- data.frame(Coef.Raw.clr = as.numeric(Coef.Raw.clr_NCC),
+                               namebinlist = namebinlist)
+
+betahistS_other = compositions::ilrInv(coef_other_discrete) # S^28
+Coef.Raw.clr_other <- compositions::clr(betahistS_other )
+Coef.Raw.clr_other <- data.frame(Coef.Raw.clr = as.numeric(Coef.Raw.clr_other),
+                                 namebinlist = namebinlist)
+
+#---Coef of discrete regression for tmin
+betahistS_tmin = compositions::ilrInv(mod_compo28$coefficients[36:56]) # S^28
+Coef.Raw.clr_tmin <- compositions::clr(betahistS_tmin )
+
+namebinlistmin <- c( "7-8", "8-9", "9-10", 
+                     "10-11", "11-12", "12-13", 
+                     "13-14", "14-15", "15-16", "16-17",
+                     "17-18", "18-19", "19-20", 
+                     "20-21", "21-22", "22-23", 
+                     "23-24", "24-25", "25-26", 
+                     "26-27", "27-28", "28-29")
+Coef.Raw.clr_tmin <- data.frame(Coef.Raw.clr = as.numeric(Coef.Raw.clr_tmin),
+                                namebinlist = namebinlistmin)
+Coef.Raw.clr_tmin$namebinlist <- factor(Coef.Raw.clr_tmin$namebinlist,
+                                        levels = namebinlistmin)
+```
+
+## The scalar on density regression model
+
+```{r}
+reg.spline <- lm(YIELDF~  year_conti + Precipitation + SR + 
+                   MDR + NMM+ RRD+
+                   NCC+   x1tmax + x2tmax + x3tmax + x4tmax + x5tmax + x6tmax +  
+                   x7tmax + x8tmax + x9tmax + x10tmax + x11tmax + x12tmax+
+                   x1tmax*NCC + x2tmax*NCC + x3tmax*NCC +
+                   x4tmax*NCC + x5tmax*NCC + x6tmax*NCC +  
+                   x7tmax*NCC + x8tmax*NCC + x9tmax*NCC +
+                   x10tmax*NCC + x11tmax*NCC + x12tmax*NCC +
+                   x1tmax*RRD + x2tmax*RRD + x3tmax*RRD +
+                   x4tmax*RRD + x5tmax*RRD + x6tmax*RRD +  
+                   x7tmax*RRD + x8tmax*RRD + x9tmax*RRD +
+                   x10tmax*RRD + x11tmax*RRD + x12tmax*RRD +
+                   x1tmin + x2tmin + x3tmin + x4tmin + x5tmin + x6tmin +  
+                   x7tmin + x8tmin + x9tmin + x10tmin + x11tmin + x12tmin,
+                 data = RiceALL)
+
+
+```
+
+```{r}
+coef_tmax_RRD <- coef(reg.spline )[9:20] + coef(reg.spline )[45:56]
+betacurveL2_RRD<- CFR.tmaxB1K11$Zbasis_finner %*% coef_tmax_RRD #L2
+betacurveB2_RRD <- fcenLRinvF(CFR.tmaxB1K11$Partition, betacurveL2_RRD, k= 1) #B2
+
+
+coef_tmax_NCC <- coef(reg.spline )[9:20] +  coef(reg.spline )[33:44]
+betacurveL2_NCC<- CFR.tmaxB1K11$Zbasis_finner %*% coef_tmax_NCC #L2
+betacurveB2_NCC <- fcenLRinvF(CFR.tmaxB1K11$Partition, betacurveL2_NCC, k= 1) #B2
+
+betacurveL2_Other <- CFR.tmaxB1K11$Zbasis_finner %*% coef(reg.spline )[9:20] #L2
+betacurveB2_Other <- fcenLRinvF(CFR.tmaxB1K11$Partition, betacurveL2_Other, k= 1) #B2
+```
+
+```{r}
+predict.raw <- data.frame(fitted.values = mod_compo28$fitted.values,
+                          YIELDF = RiceALL$ YIELDF, 
+                          Region = RiceALL$ Region)
+
+predict.raw$Region <- as.factor(predict.raw$Region)
+
+levels(predict.raw$Region) <- c("Other", "Other", "Other", "Other","NCC", "RRD")
+
+predict.spline <- data.frame(fitted.values = reg.spline$fitted.values,
+                             YIELDF = RiceALL$ YIELDF,
+                             Region = RiceALL$ Region)
+predict.spline$Region <- as.factor(predict.spline$Region)
+levels(predict.spline$Region) <- c("Other", "Other", "Other","Other","NCC", "RRD")
+
+predict.Ave <- data.frame(fitted.values = mod_compo28_Ave$fitted.values,
+                             YIELDF = RiceALL$ YIELDF,
+                             Region = RiceALL$ Region)
+predict.Ave$Region <- as.factor(predict.Ave$Region)
+levels(predict.Ave$Region) <- c("Other", "Other", "Other","Other","NCC", "RRD")
+
+predict.Schlenker <- data.frame(fitted.values = mod_Schlenker$fitted.values,
+                         YIELDF = RiceALL$ YIELDF,
+                         Region = RiceALL$ Region)
+predict.Schlenker$Region <- as.factor(predict.Schlenker$Region)
+levels(predict.Schlenker$Region) <- c("Other", "Other", "Other","Other","NCC", "RRD")
+
+
+PredictAll <- data.frame(YIELDF = RiceALL$ YIELDF,
+                         pro = RiceALL$pro,
+                         Region = RiceALL$Region,
+                         year = RiceALL$year,
+                         predictspline =predict.spline$fitted.values,
+                         predictdiscrete = predict.raw$fitted.values,
+                         predictAve = predict.Ave$fitted.values,
+                         predictSchlenker = predict.Schlenker$fitted.values)
+
+PredictAll <- PredictAll %>% mutate(Smooth =(predictspline-YIELDF)^2,
+                                    Discrete =(predictdiscrete-YIELDF)^2 ,
+                                    Ave =( predictAve-YIELDF)^2,
+                                    Schlenker =( predictSchlenker-YIELDF)^2)
+PredictAllmelt <- PredictAll[, c("Region", "Smooth", "Discrete", "Ave", "Schlenker")]
+PredictAllmelt <- reshape2::melt(PredictAllmelt, id.vars ="Region" )
+
+PredictAllmelt$Region <- as.factor(PredictAllmelt$Region)
+levels(PredictAllmelt$Region) <- c("SR", "CHR",
+                                   "MDR", "NMM", "NCC", "RRD")
+
+names(PredictAllmelt)[2] <- "Regression models"
+PredictAllmelt$`Regression models` <- as.factor(PredictAllmelt$`Regression models` )
+levels(PredictAllmelt$`Regression models`) <- c("Smooth",    "Discrete",
+                                                "Annual mean",       "Schlenker and Robert")
+PredictAllmelt$`Regression models` <- factor(PredictAllmelt$`Regression models`,
+                                             levels = c("Annual mean", "Schlenker and Robert",
+                                                        "Discrete", "Smooth") )
+```
+
+## Table 2
+
+```{r}
+summary(mod_compo28)
+summary(reg.spline )
+```
+
+
+## Table 3
+
+```{r}
+Tab3Com <- PredictAllmelt %>% group_by(Region, `Regression models`)%>%
+  summarise(meanv = round(mean(value),2),
+            medianv =round( median(value),2),
+            sdv = round(sd(value), 2))
+
+Tab3Com$meansd <- paste0(Tab3Com$meanv, " (", Tab3Com$sdv, ")")
+
+Tab3Com[, c(1, 2, 4, 6)]
+
+```
+
+## RMSE in Table 2 and Table ST5
+
+```{r}
+N <- length(PredictAll$predictdiscrete)
+RMSE_discrete <- sqrt(sum(PredictAll$Discrete)/N)
+RMSE_smooth <- sqrt(sum(PredictAll$Smooth)/N)
+RMSE_Ave <- sqrt(sum(PredictAll$Ave)/N)
+round(RMSE_discrete, 2)
+round(RMSE_smooth,2)
+round(RMSE_Ave ,2)
+round(sqrt(sum(mod_Schlenker$residuals^2)/1890), 2)
+round(sqrt(sum(mod_compo28_Ave$residuals^2)/1890), 2)
+```
+
+## Table 4
+
+```{r}
+#---Leave one out CV
+## The scalar on composition regression model
+Modelcomposition <- "YIELDF ~  year_conti + Precipitation +
+                   SR + MDR +NMM+
+                   NCC+ RRD+
+                   compositions::ilr(histc28 )+ 
+                   compositions::ilr(histc22tmin)+
+                   compositions::ilr(histc28 )*NCC+
+                   compositions::ilr(histc28 )*RRD"
+ModeAnnual <- "YIELDF ~  year_conti + Precipitation +
+                       SR + MDR +NMM+
+                       NCC+ RRD+
+                       TmaxAve+ 
+                       TminAve+
+                       TmaxAve*NCC+
+                       TmaxAve*RRD"
+ModeSchlenker <- "YIELDF ~  year_conti + Precipitation +
+                      SR + MDR +NMM+NCC+ RRD+ 
+                      s2 + s3 + s4 + s5 + s6 + s7 + s8 + s9  + s10 + s11 + s12 + s13 + s14 + s15 +
+                      s16 + s17 + s18 + s19 +s20 + s21 + s22 + s23 + s24 + s25 + s26 + s27 +s28 +
+                      s2tmin + s3tmin + s4tmin + s5tmin + s6tmin + s7tmin + s8tmin + s9tmin +
+                      s10tmin + s11tmin + s12tmin + s13tmin + s14tmin + s15tmin + s16tmin + s17tmin + 
+                      s18tmin + s19tmin + s20tmin + s21tmin + s22tmin+
+                      s2*NCC + s3*NCC + s4*NCC + s5*NCC + s6*NCC + s7*NCC + 
+                      s8*NCC + s9*NCC  + s10*NCC +
+                      s11*NCC + s12*NCC + s13*NCC + 
+                      s14*NCC + s15*NCC +  s16*NCC + 
+                      s17*NCC + s18*NCC + s19*NCC +
+                      s20*NCC + s21*NCC + s22*NCC +
+                      s23*NCC + s24*NCC + s25*NCC + 
+                      s26*NCC + s27*NCC +s28*NCC +
+                      s2*RRD + s3*RRD + s4*RRD + 
+                      s5*RRD + s6*RRD + s7*RRD + 
+                      s8*RRD + s9*RRD  + s10*RRD +
+                      s11*RRD + s12*RRD + s13*RRD + 
+                      s14*RRD + s15*RRD +  s16*RRD + 
+                      s17*RRD + s18*RRD + s19*RRD +
+                      s20*RRD + s21*RRD + s22*RRD +
+                      s23*RRD + s24*RRD + s25*RRD + 
+                      s26*RRD + s27*RRD +s28*RRD"
+Modedensity <- "YIELDF~  year_conti + Precipitation + SR + 
+                   MDR + NMM+ RRD+NCC+ 
+                   x1tmax + x2tmax + x3tmax + x4tmax + x5tmax + x6tmax +  
+                   x7tmax + x8tmax + x9tmax + x10tmax + x11tmax + x12tmax+
+                   x1tmax*NCC + x2tmax*NCC + x3tmax*NCC +
+                   x4tmax*NCC + x5tmax*NCC + x6tmax*NCC +  
+                   x7tmax*NCC + x8tmax*NCC + x9tmax*NCC +
+                   x10tmax*NCC + x11tmax*NCC + x12tmax*NCC +
+                   x1tmax*RRD + x2tmax*RRD + x3tmax*RRD +
+                   x4tmax*RRD + x5tmax*RRD + x6tmax*RRD +  
+                   x7tmax*RRD + x8tmax*RRD + x9tmax*RRD +
+                   x10tmax*RRD + x11tmax*RRD + x12tmax*RRD +
+                   x1tmin + x2tmin + x3tmin + x4tmin + x5tmin + x6tmin +  
+                   x7tmin + x8tmin + x9tmin + x10tmin + x11tmin + x12tmin"
+year_list <- c("1987", "1988", "1989", "1990", "1991",
+               "1992", "1993", "1994", "1995", "1996",
+               "1997", "1998", "1999", "2000", "2001", 
+               "2002", "2003", "2004", "2005", "2006",
+               "2007", "2008", "2009", "2010", "2011",
+               "2012", "2013", "2014", "2015" ,"2016")
+Clim_Oct22Tmax <- Clim_Oct22Tmax %>% mutate(SR = ifelse(Region == " Southeastern Area" , 1, 0),
+                        MDR = ifelse(Region == "Mekong Delta" , 1, 0),
+                        NMM = ifelse(Region == "Midlands and Northern Mountainous Areas" , 1, 0), 
+                        RRD = ifelse(Region == "Red River Delta" , 1, 0), 
+                        NCC = ifelse(Region == "Northern and Coastal Central Region" , 1, 0),
+                        CHR = ifelse(Region == "Central Highlands" , 1, 0))
+RiceALL<- RiceALL %>% mutate(SR = ifelse(Region == " Southeastern Area" , 1, 0),
+                        MDR = ifelse(Region == "Mekong Delta" , 1, 0),
+                        NMM = ifelse(Region == "Midlands and Northern Mountainous Areas" , 1, 0), 
+                        RRD = ifelse(Region == "Red River Delta" , 1, 0), 
+                        NCC = ifelse(Region == "Northern and Coastal Central Region" , 1, 0),
+                        CHR = ifelse(Region == "Central Highlands" , 1, 0))
+CVSSE <- data.frame(year = year_list,
+                    composition =  rep(NA, 30),
+                    Annual=  rep(NA, 30),
+                    Schlenker=  rep(NA, 30),
+                    Density =  rep(NA, 30))
+for (yr0 in  year_list)
+{
+ regComposition <- lm(Modelcomposition, data = Clim_Oct22Tmax[Clim_Oct22Tmax$year!= yr0, ])
+ regAnnual <- lm(ModeAnnual, data = Clim_Oct22Tmax[Clim_Oct22Tmax$year!= yr0, ])
+ regSchlenker <- lm(ModeSchlenker, data = Clim_Oct22Tmax[Clim_Oct22Tmax$year!= yr0, ])
+ regdensity <- lm(Modedensity, data = RiceALL[RiceALL$year!= yr0, ])
+ 
+ regComposition <- predict(regComposition, newdata =  Clim_Oct22Tmax[Clim_Oct22Tmax$year== yr0, ] )
+ CompositionSSE <- sum((regComposition-Clim_Oct22Tmax[Clim_Oct22Tmax$year== yr0, ]$YIELDF)^2)/63
+ 
+ regAnnual <- predict(regAnnual, newdata =  Clim_Oct22Tmax[Clim_Oct22Tmax$year== yr0, ] )
+ AnnualSSE <- sum((regAnnual-Clim_Oct22Tmax[Clim_Oct22Tmax$year== yr0, ]$YIELDF)^2)/63
+ 
+ regSchlenker <- predict(regSchlenker, newdata =  Clim_Oct22Tmax[Clim_Oct22Tmax$year== yr0, ] )
+ SchlenkerSSE <- sum((regSchlenker-Clim_Oct22Tmax[Clim_Oct22Tmax$year== yr0, ]$YIELDF)^2)/63
+ 
+ regdensity <- predict(regdensity, newdata = RiceALL[RiceALL$year== yr0, ] )
+ densitySSE <- sum((regdensity-RiceALL[RiceALL$year== yr0, ]$YIELDF)^2)/63
+ CVSSE[CVSSE$year == yr0, c( "composition", "Annual",      "Schlenker",   "Density"  )] <- c(CompositionSSE, AnnualSSE,
+                                                                                            SchlenkerSSE, densitySSE) 
+}
+
+CVSSEmelt <- reshape2::melt(CVSSE, id.vars = "year")
+CVSSEmelt$variable <- as.factor(CVSSEmelt$variable)
+levels(CVSSEmelt$variable) <- c("Scalar-on-composition",
+                                "Annual mean",
+                                "Schlenker and Roberts",
+                                "Scalar-on-density")
+CVSSEmelt.mean <- CVSSEmelt%>% group_by(variable) %>%
+  summarise(median0 = median(value),
+    mean0 = mean(value),
+            sd0 = sd(value))
+CVSSEmelt.mean
+```
+
+## Figure 5
+
+```{r}
+op <- par(mfrow = c(1, 1))
+barplot(Coef.Raw.clr_RRD$Coef.Raw.clr~ Coef.Raw.clr_RRD$namebinlist,
+        main  = "RRD", 
+        las = 2, ylab = "Value",
+        cex.names = 1.2, xlab = " ",
+        ylim = c(-0.25, 0.5))
+par(op)
+```
+
+## Figure 6
+
+```{r}
+
+coln <- viridis(3, alpha = 1, begin = 0, end = 1, direction = 1)
+op <- par(mfrow = c(1, 2))
+
+plot(betacurveB2_RRD$knots, betacurveB2_RRD$estimate,
+     xlab = "Temperature", ylab = "Density",
+     type = "l", col = coln[1],
+     lwd = 3, cex.lab = 1, 
+     cex.axis = 1, ylim = c(0, 4.5))
+lines(CFR.tmaxB1K11$Partition, betacurveB2_NCC$estimate, type = "l", las = 1, 
+      col = coln[2], lwd = 3, cex.lab = 1, 
+      cex.axis = 1)
+
+lines(CFR.tmaxB1K11$Partition, betacurveB2_Other$estimate, type = "l", las = 1, 
+      col = coln[3], lwd = 3, cex.lab = 1, 
+      cex.axis = 1)
+abline(h = 0, col = "red", lty = 2, lwd = 1)
+abline(v = CFR.tmaxB1K11$knots, col = "gray", lty = 2, lwd = 1)
+
+legend("topleft",
+       legend =  c("RRD", "NCC" ,
+                   "Other region"),  col = coln,
+       lty = 1, lwd = 1, cex = 0.5)
+
+matplot(CFR.tmaxB1K11$Partition, betacurveL2_RRD, type = "l", las = 1, 
+        xlab = "Temperature", ylab = "clr(density)", 
+        col = coln[1], lwd = 3, cex.lab = 1, 
+        cex.axis = 1,
+        ylim = c(-10, 15))
+lines(CFR.tmaxB1K11$Partition, betacurveL2_NCC, type = "l", las = 1, 
+      col = coln[2], lwd = 3, cex.lab = 1, 
+      cex.axis = 1)
+lines(CFR.tmaxB1K11$Partition, betacurveL2_Other, type = "l", las = 1, 
+      col = coln[3], lwd = 3, cex.lab = 1, 
+      cex.axis = 1)
+abline(h = 0, col = "red", lty = 2, lwd = 1)
+abline(v = CFR.tmaxB1K11$knots, col = "gray", lty = 2, lwd = 1)
+legend("topleft", 
+       legend = c("RRD", "NCC" ,
+                  "Other regions"),
+       col = coln,
+       lty = 1, lwd = 2, cex = 0.5)
+par(op)
+
+```
+
+
+
+## Figure 7
+
+```{r}
+# NINHBINH, in 2016
+
+comp_from0 <- unlist(Clim_Oct22Tmax[Clim_Oct22Tmax$pro == "NINHBINH"  & Clim_Oct22Tmax$year == 2016, c(3:30)])
+
+comp_direc0 <- c(rep(0, 19), -1, 1, rep(0, 7))
+
+TB_pcseq4 <- CoDa_path(
+  comp_direc = exp(comp_direc0),
+  comp_from = comp_from0,
+  add_opposite = TRUE,
+  step_size = .1,
+  n_steps = 100) 
+h.seq <- seq(-10, 10, by = 0.1)
+TB_pcseq4$h <- seq(-10, 10, by = 0.1)
+
+min0 <- min(Clim_Oct22Tmax$s20)
+max0 <- max(Clim_Oct22Tmax$s21)
+
+TB_pcseq4Limit <- TB_pcseq4[TB_pcseq4$s20 <= 0.371584, ]
+
+TB_pcseq4Limit.s21 <- TB_pcseq4[TB_pcseq4$s21 <= 0.3606551, ]
+names(TB_pcseq4)[1:28] <- namebinlist
+window <- as.character(seq(-70,70,by = 1))
+TB_pcseq40 <- TB_pcseq4[, c(1:28)] # Data with only coda vector in S^28
+```
+
+```{r}
+
+TB_pcseq4$nh <- -100:100
+TB_pcseq4Melt <- melt(TB_pcseq4, id.vars = c("h", "nh"))
+
+TB_pcseq4$nh <- -100:100
+TB_pcseq4MeltV2 <- melt(TB_pcseq4[TB_pcseq4$h> -2.3 & TB_pcseq4$h < 2.3, ],id.vars = c("h","nh"))
+
+
+NewdataNB <- TB_pcseq4[TB_pcseq4$h> -2.3 & TB_pcseq4$h < 2.3, ]
+
+names(NewdataNB)[1:28] <- names(Clim_Oct22Tmax)[3:30]
+NewdataNB <- NewdataNB %>%
+  mutate(s1tmin = NA,s2tmin = NA, s3tmin = NA, s4tmin = NA, s5tmin = NA, s6tmin = NA,
+   s7tmin = NA, s8tmin = NA, s9tmin = NA, s10tmin = NA, s11tmin = NA,s12tmin = NA, 
+   s13tmin = NA,s14tmin = NA,s15tmin = NA, s16tmin = NA,s17tmin = NA,s18tmin = NA, 
+   s19tmin = NA,s20tmin = NA,s21tmin = NA, s22tmin= NA, year_conti= NA, Precipitation = NA,
+   SR= NA, MDR= NA, NMM= NA,
+   NCC= NA, RRD= NA)
+
+NewdataNB[, c("s1tmin", "s2tmin", "s3tmin","s4tmin", "s5tmin", "s6tmin",
+"s7tmin", "s8tmin", "s9tmin","s10tmin","s11tmin","s12tmin",     
+"s13tmin","s14tmin","s15tmin",  "s16tmin","s17tmin","s18tmin",     
+"s19tmin","s20tmin","s21tmin",     "s22tmin","year_conti",   "Precipitation",     
+"SR", "MDR","NMM",
+"NCC", "RRD")] <- 
+  Clim_Oct22Tmax[Clim_Oct22Tmax$pro == "NINHBINH" & Clim_Oct22Tmax$year == 2016, 
+                 c("s1tmin", "s2tmin", "s3tmin","s4tmin", "s5tmin", "s6tmin",
+                   "s7tmin", "s8tmin", "s9tmin","s10tmin","s11tmin","s12tmin",    
+                   "s13tmin","s14tmin","s15tmin",  "s16tmin","s17tmin","s18tmin", 
+                   "s19tmin","s20tmin","s21tmin",     "s22tmin","year_conti",  
+                   "Precipitation",  "SR", "MDR",
+                   "NMM", "NCC", "RRD")]
+
+Y.TB <- predict(mod_compo28, new.data = NewdataNB )
+NewdataNB$histc28 = compositions::clo(NewdataNB[, c("s1", "s2", "s3", "s4",  "s5", "s6", "s7", "s8", "s9", "s10","s11","s12", "s13","s14","s15","s16",  "s17","s18","s19","s20", "s21","s22","s23","s24",  "s25","s26","s27","s28" )])
+NewdataNB$histc22tmin = compositions::clo(NewdataNB[, c("s1tmin", "s2tmin","s3tmin", "s4tmin", "s5tmin", "s6tmin",  "s7tmin", "s8tmin", "s9tmin", "s10tmin",   
+"s11tmin","s12tmin","s13tmin","s14tmin",   
+"s15tmin","s16tmin","s17tmin","s18tmin",   
+"s19tmin","s20tmin","s21tmin","s22tmin")])
+NewdataNB$YIELDFhat <- predict(mod_compo28, newdata = NewdataNB )
+
+
+NewdataNBmelt <- NewdataNB[, c("s1", "s2", "s3", "s4",
+                               "s5", "s6", "s7", "s8",
+                               "s9", "s10","s11","s12",       
+                               "s13","s14","s15","s16",       
+                               "s17","s18","s19","s20",       
+                               "s21","s22","s23","s24",       
+                               "s25","s26","s27","s28", "YIELDFhat",
+                               "h", "nh")]
+NewdataNBmelt <- melt(NewdataNBmelt, id.vars = c("YIELDFhat", "h", "nh") )
+
+YIELDF0 <- unique(NewdataNBmelt[NewdataNBmelt$h ==0, "YIELDFhat"])
+```
+
+```{r}
+NewdataNBmeltV2 <-  NewdataNBmelt[NewdataNBmelt$h %in% c(-2.5, 0, 2.5), ]
+NewdataNBmeltV2$h <- as.factor(NewdataNBmeltV2$h)
+
+NewdataNBmeltV3 <- NewdataNBmelt
+NewdataNBmeltV3$variable <- as.factor(NewdataNBmeltV3$variable)
+levels(NewdataNBmeltV3$variable) <- c("12-13", "13-14", "14-15", "15-16", "16-17", "17-18", "18-19", "19-20", "20-21", "21-22", "22-23",
+                 "23-24", "24-25", "25-26", "26-27",
+                 "27-28", "28-29", "29-30", "30-31", "31-32", "32-33",
+                 "33-34", "34-35", "35-36", "36-37",
+                 "37-38", "38-39", "39-40")
+```
+
+```{r}
+yh <- data.frame(h = unique(NewdataNBmelt[NewdataNBmelt$h>= 0, ]$h),
+                 yhat = NA)
+df <- NewdataNBmelt[NewdataNBmelt$h>= 0, ]
+for (i in 1:23)
+{
+  h0 <- yh[i, "h"]
+  yh[i, "yhat"] <-  df[df$h == h0, "YIELDFhat"][1]
+}
+reg0 <- lm(h ~ yhat, data = yh)
+#summary(reg0)
+b <- coef(reg0)[1]
+a <- coef(reg0)[2]
+
+P1Half <- ggplot(df, aes(x = YIELDFhat, y = value, group = variable)) +
+  geom_line(aes(color = variable), cex = 1) +
+  scale_color_manual(values = c(rep("grey", 19), "blue", "red", rep("grey", 7))) +
+  geom_vline(xintercept = YIELDF0, col = "green", cex = 1) +
+  coord_flip() +
+  scale_y_continuous(name = "Bins relative frequencies") +
+  scale_x_continuous(
+    name = "Predicted rice yield",
+    sec.axis = sec_axis(~ a * . + b, name = "h value") ) +
+  annotate("label", y = 0.19, x = 6.57,
+           label = "Ninh Binh in 2016") +
+  theme(axis.text.x.top = element_text(size = 10),   # top axis text size
+        axis.title.x.top = element_text(size = 10),  # top axis title size
+        axis.text.x.bottom = element_text(size = 10),
+        axis.title.x.bottom = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        plot.title = element_text(color = "grey20", size = 10, face = "bold"),
+        legend.position = "none")   # <- removes legend
+
+P1Half
+P2 <- ggplot(NewdataNBmeltV3[NewdataNBmeltV3$h>0, ], aes(x = variable, y = value,   group = h,  color  = h)) +
+  geom_smooth(se = F, method = 'loess', n = 800, 
+              span = .4, cex = 0.5,
+              degree = 5)+ # theme_classic() +
+  labs(color = "h value") +  # <-- rename legend title here
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, size = 10,  hjust = 1))+
+  theme(axis.text.y = element_text(angle = 90, vjust = 0.5, size = 10, hjust = 1))+
+  theme(axis.title.y = element_text(size = 10))+
+  theme(axis.title.y = element_text(size = 10))+
+  theme(plot.title = element_text( color = "grey20", size = 10, face = "bold")) +
+  theme(legend.text = element_text( size = 18))+
+  theme(legend.title = element_text( size = 10))+
+  ylab("Relative frequency") + xlab("Temperature")
+P2
+```
+
+
+## Figure 8
+
+```{r}
+Regiondata <- unique( RiceALL[, c("Region", "province" )])
+names(Regiondata)[2] <- "pro"
+Regiondata$province <- Regiondata$pro
+CMIP5tmaxALL <- left_join(CMIP5tmaxALL, Regiondata[, c("province", "Region")] )
+CMIP5tminALL <- left_join(CMIP5tminALL, Regiondata[, c("province", "Region")])
+CMIP5tminALL <- CMIP5tminALL %>% 
+  mutate(Region = case_when(Region =="Mekong Delta" ~ "MKR",
+                            Region == "Midlands and Northern Mountainous Areas" ~ "MNM",
+                            Region =="Red River Delta"  ~ "RRD",
+                            Region == " Southeastern Area"  ~ "SR",
+                            Region =="Northern and Coastal Central Region"  ~ "NCC",
+                            Region =="Central Highlands" ~ "CHR"))
+
+CMIP5tmaxALL <-CMIP5tmaxALL %>% 
+  mutate(Region = case_when(Region =="Mekong Delta" ~ "MKR",
+                            Region == "Midlands and Northern Mountainous Areas" ~ "MNM",
+                            Region =="Red River Delta"  ~ "RRD",
+                            Region ==" Southeastern Area" ~ "SR",
+                            Region =="Northern and Coastal Central Region"  ~ "NCC",
+                            Region =="Central Highlands" ~ "CHR"))
+
+Clim_Oct22Tmax <-Clim_Oct22Tmax %>% 
+  mutate(Region = case_when(Region =="Mekong Delta" ~ "MKR",
+                            Region == "Midlands and Northern Mountainous Areas" ~ "MNM",
+                            Region =="Red River Delta"  ~ "RRD",
+                            Region ==" Southeastern Area" ~ "SR",
+                            Region =="Northern and Coastal Central Region"  ~ "NCC",
+                            Region =="Central Highlands" ~ "CHR"))
+
+
+Tmax2016_RRD <- Clim_Oct22Tmax[Clim_Oct22Tmax$Region== "RRD"& Clim_Oct22Tmax$year == 2016, c(3:30)]
+Tmax2016_RRD = acomp(Tmax2016_RRD)
+Tmax2099_RRD <- CMIP5tmaxALL[CMIP5tmaxALL$Region== "RRD", c(2:29)]
+Tmax2099_RRD = acomp(Tmax2099_RRD)
+
+TmaxRRD <- c(as.vector(mean(Tmax2016_RRD)), as.vector(mean(Tmax2099_RRD)))
+
+TmaxRRD <- data.frame(value = TmaxRRD,
+                      Scenario = c(rep("Observed", 28),  rep("RCP2.6", 28)),
+                      namebin = rep(namebinlist , 2))      
+TmaxRRD$Scenario <- factor(TmaxRRD$Scenario,    levels = c("Observed",     "RCP2.6"))
+```
+
+```{r}
+Tmax2016_NCC <- Clim_Oct22Tmax[Clim_Oct22Tmax$Region== "NCC"& Clim_Oct22Tmax$year == 2016, c(3:30)]
+Tmax2016_NCC = acomp(Tmax2016_NCC)
+
+Tmax2099_NCC <- CMIP5tmaxALL[CMIP5tmaxALL$Region== "NCC", c(2:29)]
+Tmax2099_NCC = acomp(Tmax2099_NCC)
+
+TmaxNCC <- c(as.vector(mean(Tmax2016_NCC)),   as.vector(mean(Tmax2099_NCC)))
+
+TmaxNCC <- data.frame(value = TmaxNCC,
+                      Scenario = c(rep("Observed", 28),   rep("RCP2.6", 28)),
+                      namebin = rep(namebinlist , 2))      
+TmaxNCC$Scenario <- factor(TmaxNCC$Scenario,   levels = c("Observed",    "RCP2.6"))
+
+Tmax2016_CH <- Clim_Oct22Tmax[Clim_Oct22Tmax$Region== "CHR"& Clim_Oct22Tmax$year == 2016, c(3:30)]
+Tmax2016_CH = acomp(Tmax2016_CH)
+Tmax2099_CH <- CMIP5tmaxALL[CMIP5tmaxALL$Region== "CHR", c(2:29)]
+Tmax2099_CH = acomp(Tmax2099_CH)
+
+TmaxCH <- c(as.vector(mean(Tmax2016_CH)), as.vector(mean(Tmax2099_CH)))
+
+TmaxCH <- data.frame(value = TmaxCH,
+                     Scenario = c(rep("Observed", 28),   rep("RCP2.6", 28)),
+                     namebin = rep(namebinlist , 2))      
+TmaxCH$Scenario <- factor(TmaxCH$Scenario,
+                          levels = c("Observed",   "RCP2.6"))
+Tmax2016_MKR <- Clim_Oct22Tmax[Clim_Oct22Tmax$Region== "MKR"& Clim_Oct22Tmax$year == 2016, c(3:30)]
+Tmax2016_MKR = acomp(Tmax2016_MKR)
+Tmax2099_MKR <- CMIP5tmaxALL[CMIP5tmaxALL$Region== "MKR", c(2:29)]
+Tmax2099_MKR = acomp(Tmax2099_MKR)
+
+
+TmaxMDR <- c(as.vector(mean(Tmax2016_MKR)), as.vector(mean(Tmax2099_MKR)))
+
+TmaxMDR <- data.frame(value = TmaxMDR,
+                      Scenario = c(rep("Observed", 28),   rep("RCP2.6", 28)),
+                      namebin = rep(namebinlist , 2))      
+TmaxMDR$Scenario <- factor(TmaxMDR$Scenario,
+                           levels = c("Observed",   "RCP2.6"))
+```
+
+```{r}
+pTmaxRRD <- ggplot(data=TmaxRRD[TmaxRRD$Scenario %in% c("Observed", "RCP2.6"), ],
+                   aes(x = namebin , y =value, fill = Scenario)) +
+  geom_bar(stat="identity", position=position_dodge() )+
+  scale_fill_manual(values=c("orange", "blue"))+
+  ylab ("Frequency")  + xlab ("Temperature")+
+  theme(axis.text.x = element_text(angle = 90, 
+                                   vjust = 0.5, 
+                                   hjust=1, size = 10),
+        axis.title.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        legend.position = "none")+
+  annotate("text", y = 0.13, x = 8,size = 10,
+           label = "RRD region", fontface = "bold") 
+pTmaxRRD
+
+pTmaxNCC <- ggplot(data=TmaxNCC[TmaxNCC$Scenario %in% c("Observed", "RCP2.6"), ], aes(x = namebin , y =value, fill = Scenario)) +
+  geom_bar(stat="identity", position=position_dodge() )+
+  scale_fill_manual(values=c("orange", "blue"))+#, "orange"))+
+  ylab ("Frequency")  + xlab ("Temperature")+
+  theme(axis.text.x = element_text(angle = 90, 
+                                   vjust = 0.5, 
+                                   hjust=1, size = 10),
+        axis.title.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        legend.position = "none")+
+  annotate("text", y = 0.26, x = 8 ,size = 10,
+           label = "NCC region", fontface = "bold") 
+pTmaxNCC
+
+pTmaxCH <- ggplot(data=TmaxCH[TmaxCH$Scenario %in% c("Observed", "RCP2.6"), ], aes(x = namebin , y =value, fill = Scenario)) +
+  geom_bar(stat="identity", position=position_dodge() )+
+  scale_fill_manual(values=c("orange", "blue"))+#, "orange"))+
+  ylab ("Frequency")  + xlab ("Temperature")+
+  theme(axis.text.x = element_text(angle = 90, 
+                                   vjust = 0.5, 
+                                   hjust=1, size = 10),
+        axis.title.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        legend.position = "none")+
+  annotate("text", y = 0.26, x = 8 ,size = 10,
+           label = "CHR region", fontface = "bold") 
+pTmaxCH
+
+pTmaxMDR <- ggplot(data=TmaxMDR[TmaxMDR$Scenario %in% c("Observed", "RCP2.6"), ], 
+                   aes(x = namebin , y =value, fill = Scenario)) +
+  geom_bar(stat="identity", position=position_dodge() )+
+  scale_fill_manual(values=c("orange", "blue"))+#, "orange"))+
+  ylab ("Frequency")  + xlab ("Temperature")+
+  theme(axis.text.x = element_text(angle = 90, 
+                                   vjust = 0.5, 
+                                   hjust=1, size = 10),
+        axis.title.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        legend.position = "none")+
+  annotate("text", y = 0.42, x = 8 ,size = 10,
+           label = "MDR region", fontface = "bold") 
+pTmaxMDR
+```
+
+
+
+## Table 5
+
+```{r}
+#----------Impact of RCP2.6 and year 2016 for each province:tmax
+Clim_Oct22Tmax$province <-  Clim_Oct22Tmax$pro
+CMIP5tmaxALL <- left_join(CMIP5tmaxALL, unique(Clim_Oct22Tmax[, c("province", "Region")])) 
+
+D.Tmax <-  unique(Clim_Oct22Tmax[, c("province", "Region")])
+D.Tmax <- D.Tmax %>% mutate(
+  s1 = NA, s2 = NA, s3 = NA, s4 = NA,
+  s5 = NA, s6 = NA, s7 = NA, s8 = NA,
+  s9 = NA, s10 = NA, s11 = NA, s12 = NA,
+  s13 = NA, s14 = NA, s15 = NA, s16 = NA, s17 = NA, s18 = NA,
+  s19 = NA, s20 = NA, s21 = NA, s22 = NA,
+  s23 = NA, s24 = NA, s25 = NA, s26 = NA,
+  s27 = NA, s28 = NA)
+
+for (pro0 in D.Tmax$province)
+{
+  codaRCP <- NULL
+  coda2016 <- NULL
+  codaRCP <- acomp(CMIP5tmaxALL[CMIP5tmaxALL$province== pro0, c(2:29)])
+  coda2016 <- acomp(Clim_Oct22Tmax[Clim_Oct22Tmax$pro == pro0 & Clim_Oct22Tmax$year== 2016, c(3:30)])
+  D.Tmax[D.Tmax$province == pro0, c(3:30)] <- 
+    compositions::clr(codaRCP - coda2016 )
+}
+```
+
+```{r}
+
+
+#===The impact of discrete by tmax
+
+D.Tmax$ImpactTmaxDiscrete <- NA
+for (pro0 in D.Tmax[D.Tmax$Region ==  "RRD" , "province"]) 
+{
+  D.Tmax[D.Tmax$province == pro0, "ImpactTmaxDiscrete"] <- 
+    t(as.matrix(as.numeric(Coef.Raw.clr_RRD$Coef.Raw.clr)))%*% t( D.Tmax[D.Tmax$province == pro0, c(3:30)] ) 
+}
+
+for (pro0 in D.Tmax[D.Tmax$Region == "NCC" , "province"]) 
+{
+  D.Tmax[D.Tmax$province == pro0, "ImpactTmaxDiscrete"] <- 
+    t(as.matrix(as.numeric(Coef.Raw.clr_NCC$Coef.Raw.clr)))%*% t( D.Tmax[D.Tmax$province == pro0, c(3:30)] ) 
+}
+OtherRegion <- c( "SR",  "MNM",   "CHR",   "MKR")
+for (pro0 in D.Tmax[D.Tmax$Region %in% OtherRegion  , "province"]) 
+{
+  D.Tmax[D.Tmax$province == pro0, "ImpactTmaxDiscrete"] <- 
+    t(as.matrix(as.numeric(Coef.Raw.clr_other$Coef.Raw.clr)))%*% t( D.Tmax[D.Tmax$province == pro0, c(3:30)] ) 
+}
+```
+
+
+```{r}
+#---impact by tmin-discrete
+
+D.Tmin <-  unique(CMIP5tminALL[, c("province", "Region")])
+D.Tmin <- D.Tmin %>%
+  mutate(s1 = NA, s2 = NA, s3 = NA, s4 = NA,
+         s5 = NA, s6 = NA, s7 = NA, s8 = NA,
+         s9 = NA, s10 = NA, s11 = NA, s12 = NA,
+         s13 = NA, s14 = NA, s15 = NA, s16 = NA, s17 = NA, s18 = NA,
+         s19 = NA, s20 = NA, s21 = NA, s22 = NA)
+for (pro0 in D.Tmin$province)
+{
+  codaRCP <- NULL
+  coda2016 <- NULL
+  codaRCP <- acomp( CMIP5tminALL[ CMIP5tminALL$province== pro0, c(2:23)])
+  coda2016 <- acomp(Clim_Oct22Tmin[Clim_Oct22Tmin$pro == pro0 & Clim_Oct22Tmin$year== 2016, c(3:24)])
+  D.Tmin[D.Tmin$province == pro0, c(3:24)] <- 
+    compositions::clr(codaRCP - coda2016 )
+}
+
+
+D.Tmin$ImpactTminDiscrete <- NA
+
+for (pro0 in D.Tmin$province) 
+{
+  D.Tmin[D.Tmin$province == pro0, "ImpactTminDiscrete"] <- 
+    t(as.matrix(as.numeric(Coef.Raw.clr_tmin$Coef.Raw.clr)))%*% t( D.Tmin[D.Tmin$province == pro0, c(3:24)] ) 
+}
+
+
+
+Pil.tmax <- data.frame(province = D.Tmax$province)
+Pil.tmax <- Pil.tmax %>% mutate(# B1 = NA, 
+  B2 = NA, B3 = NA, B4 = NA,
+  B5 = NA, B6 = NA, B7 = NA, B8 = NA,
+  B9 = NA, B10 = NA, B11 = NA, B12 = NA, B13 = NA)
+
+for (b0 in names(Pil.tmax)[2:13])
+{
+  for (pro0 in Pil.tmax$province)
+  {
+    Pil.tmax[Pil.tmax$province == pro0, b0] <- 
+      t(as.matrix( evalAlltmax_Dif[, b0])) %*% t( D.Tmax[D.Tmax$province == pro0 , c(3:30)])
+  }
+}
+```
+
+
+```{r}
+#===The impact of Smooth by tmax
+
+D.Tmax$ImpactTmaxSmooth <- NA
+for (pro0 in D.Tmax[D.Tmax$Region ==  "RRD" , "province"]) 
+{
+  D.Tmax[D.Tmax$province == pro0, "ImpactTmaxSmooth"] <- 
+    t(as.matrix(as.numeric(coef_tmax_RRD)))%*% t( Pil.tmax[Pil.tmax$province == pro0, c(2:13)] ) 
+}
+
+
+for (pro0 in D.Tmax[D.Tmax$Region == "NCC" , "province"]) 
+{
+  D.Tmax[D.Tmax$province == pro0, "ImpactTmaxSmooth"] <- 
+    t(as.matrix(as.numeric(coef_tmax_NCC)))%*% t( Pil.tmax[Pil.tmax$province == pro0, c(2:13)] ) 
+}
+
+OtherRegion <- c( "SR",  "MNM",  "CHR",  "MKR")
+coef_tmax_Other <- coef(reg.spline )[9:20]
+coef_tmin_all <- coef(reg.spline )[21:32]
+#--covariance -variance matric
+
+Var_max_other <- vcov(reg.spline )[9:20, 9:20]
+Var_Tmax <- vcov(reg.spline )[9:20, 9:20]
+Var_RRD <- vcov(reg.spline )[45:56, 45:56]
+Var_NCC <- vcov(reg.spline )[33:44, 33:44]
+
+Var_Tmax_RRD <- vcov(reg.spline )[9:20, 45:56]
+Var_Tmax_NCC <- vcov(reg.spline )[9:20, 33:44]
+
+Var_max_RRD_all <- Var_Tmax + Var_RRD + 2*Var_Tmax_RRD
+Var_max_NCC_all <- Var_Tmax + Var_NCC + 2*Var_Tmax_NCC
+```
+
+
+```{r}
+#----tmin
+coef_tmin <- coef(reg.spline )[21:32]
+Var_Tmin <- vcov(reg.spline )[21:32, 21:32]
+
+
+for (pro0 in D.Tmax[D.Tmax$Region %in% OtherRegion  , "province"]) 
+{
+  D.Tmax[D.Tmax$province == pro0, "ImpactTmaxSmooth"] <- 
+    t(as.matrix(as.numeric(coef_tmax_Other)))%*% t( Pil.tmax[Pil.tmax$province == pro0, c(2:13)] ) 
+}
+
+
+D.Tmax$ImpactTmaxSmooth <- D.Tmax$ImpactTmaxSmooth 
+
+D.Tmax$ImpactTmaxSmooth[D.Tmax$ImpactTmaxSmooth < -2] <- -2
+
+
+
+Pil.tmin <- data.frame(province = D.Tmin$province)
+Pil.tmin <- Pil.tmin %>% mutate(#B1 = NA, 
+  B2 = NA, B3 = NA, B4 = NA,
+  B5 = NA, B6 = NA, B7 = NA, B8 = NA,
+  B9 = NA, B10 = NA, B11 = NA, B12 = NA, B13 = NA)
+
+for (b0 in names(Pil.tmin)[2:13])
+{
+  for (pro0 in Pil.tmin$province)
+  {
+    Pil.tmin[Pil.tmin$province == pro0, b0] <- 
+      t(as.matrix( evalAlltmin_Dif[, b0])) %*% t( D.Tmin[D.Tmin$province == pro0 , c(3:24)])
+  }
+}
+```
+
+
+```{r}
+#===The impact of Smooth by tmin
+
+D.Tmin$ImpactTminSmooth <- NA
+for (pro0 in D.Tmin$province) 
+{
+  D.Tmin[D.Tmin$province == pro0, "ImpactTminSmooth"] <- 
+    t(as.matrix(as.numeric(coef_tmin_all)))%*% t( Pil.tmin[Pil.tmin$province == pro0, c(2:13)] ) 
+}
+
+
+D.Tmin[ "ImpactTminSmooth"] <-  D.Tmin[ "ImpactTminSmooth"] 
+
+#===boxplot of the impact
+impacTmin<- D.Tmin[, c("Region", "ImpactTminDiscrete", "ImpactTminSmooth" )]
+
+impacTmin <- reshape2::melt(impacTmin, id.vars = "Region")
+
+impacTmin$variable <- as.factor(impacTmin$variable)
+impacTmin$Region <- as.factor(impacTmin$Region)
+levels(impacTmin$Region ) <- c("SR", "CHR", "MDR", "NMM", "NCC", "RRD" )
+impacTmin$Region <- factor(impacTmin$Region, 
+                           levels = c("NMM", "RRD", "NCC", "CHR",  "SR", "MDR" ))
+levels(impacTmin$variable) <- c("Discrete", "Smooth")
+
+
+impacTmax<- D.Tmax[, c("Region", "ImpactTmaxDiscrete", "ImpactTmaxSmooth" )]
+
+impacTmax<- reshape2::melt(impacTmax, id.vars = "Region")
+
+impacTmax$variable <- as.factor(impacTmax$variable)
+levels(impacTmax$variable) <- c("Discrete", "Smooth")
+impacTmax$Region <- as.factor(impacTmax$Region)
+levels(impacTmax$Region ) <- c("SR", "CHR", "MDR", "NMM", "NCC", "RRD" )
+impacTmax$Region <- factor(impacTmax$Region, 
+                           levels = c("NMM", "RRD", "NCC", "CHR",  "SR", "MDR" ))
+```
+
+
+```{r}
+#============= Variance of the impact
+D.Tmax.Region <- data.frame(Region = unique(CMIP5tmaxALL$Region))
+D.Tmax.Region <- D.Tmax.Region %>% mutate( 
+  s1 = 0, s2 =  0, s3= 0 , s4= 0 ,
+  s5= 0 , s6= 0 , s7= 0 , s8 = 0 ,
+  s9 = 0 , s10 = 0 , s11 = 0 , s12 = 0 ,
+  s13 = 0 , s14 = 0 , s15 = 0 , s16 = 0 , s17 = 0 , s18 = 0 ,
+  s19 = 0 , s20 = 0 , s21 = 0 , s22 = 0 ,
+  s23 = 0 , s24 = 0 , s25 = 0 , s26 = 0 ,
+  s27 = 0 , s28 = 0 )
+
+for (Region0 in D.Tmax.Region$Region)
+{
+  listPRO <-  as.vector(CMIP5tmaxALL[CMIP5tmaxALL$Region ==Region0, ]$province)
+  n0 <- length(listPRO)
+  Varphiall <- NULL
+  Varphiall <- matrix(rep(NA, n0*28),  nrow = n0, byrow = TRUE)
+  for (i in 1:length(listPRO))
+  {
+    pro0 <- listPRO[i]
+    codaRCP <- NULL
+    coda2016 <- NULL
+    codaRCP <- acomp(CMIP5tmaxALL[CMIP5tmaxALL$province== pro0, c(2:29)])
+    coda2016 <- acomp(Clim_Oct22Tmax[Clim_Oct22Tmax$pro == pro0 & Clim_Oct22Tmax$year== 2016, c(3:30)])
+    Varphiall[i , ] <- codaRCP - coda2016
+  }
+  D.Tmax.Region[D.Tmax.Region$Region == Region0, c(2:29)] <-  mean(acomp(Varphiall))
+}
+```
+
+```{r}
+D.Tmin.Region <- data.frame(Region = unique(CMIP5tminALL$Region))
+D.Tmin.Region <- D.Tmin.Region %>% mutate(
+  s1 = 0 , s2 = 0 , s3 = 0 , s4 = 0 ,
+  s5 = 0 , s6 = 0 , s7 = 0 , s8 = 0 ,
+  s9 = 0 , s10 = 0 , s11 = 0 , s12 = 0 ,
+  s13 = 0 , s14 = 0 , s15 = 0 , s16 = 0 , s17 = 0 , 
+  s18 = 0 , s19 = 0 , s20 = 0 , s21 = 0 , s22 = 0 )
+
+for (Region0 in D.Tmin.Region$Region)
+{
+  listPRO <-  as.vector(CMIP5tminALL[CMIP5tminALL$Region ==Region0, ]$province)
+  n0 <- length(listPRO)
+  Varphiall <- NULL
+  Varphiall <- matrix(rep(NA, n0*22),  nrow = n0, byrow = TRUE)
+  for (i in 1:length(listPRO))
+  {
+    pro0 <- listPRO[i]
+    codaRCP <- NULL
+    coda2016 <- NULL
+    codaRCP <- acomp(CMIP5tminALL[CMIP5tminALL$province== pro0, c(2:23)])
+    coda2016 <- acomp(Clim_Oct22Tmin[Clim_Oct22Tmin$pro == pro0 & Clim_Oct22Tmin$year== 2016, c(3:24)])
+    Varphiall[i , ] <- codaRCP - coda2016
+  }
+  D.Tmin.Region[D.Tmin.Region$Region == Region0, c(2:23)] <-  mean(acomp(Varphiall))
+}
+```
+
+
+
+```{r}
+Pil.tmin.Region <- data.frame(Region = unique(D.Tmin.Region$Region))
+Pil.tmin.Region <- Pil.tmin.Region %>% mutate(#B1 = 0 ,
+  B2 = 0 , B3 = 0 , B4 = 0 ,
+  B5 = 0 , B6 = 0 , B7 = 0 , B8 = 0 ,
+  B9 = 0 , B10 = 0 , B11 = 0 , B12 = 0 , B13 = 0 )
+
+for (b0 in names(Pil.tmin.Region)[2:13])
+{
+  for (Region0 in Pil.tmin.Region$Region)
+  {
+    Pil.tmin.Region[Pil.tmin.Region$Region == Region0, b0] <- 
+      t(as.matrix( evalAlltmin_Dif[, b0])) %*% t( D.Tmin.Region[D.Tmin.Region$Region == Region0 , c(2:23)])
+  }
+}
+```
+
+
+
+```{r}
+#----tmin
+coef_tmin <- coef(reg.spline )[21:32]
+Var_Tmin <- vcov(reg.spline )[21:32, 21:32]
+
+D.Tmin.Region$VarianceTminSmooth <- NA
+for (Region0 in D.Tmin.Region$Region)
+{
+  D.Tmin.Region[D.Tmin.Region$Region == Region0, "VarianceTminSmooth"] <-
+    as.matrix(Pil.tmin.Region[Pil.tmin.Region$Region ==Region0, c(2:13) ])%*% Var_Tmin %*%  t( as.matrix(Pil.tmin.Region[Pil.tmin.Region$Region ==Region0, c(2:13)]))
+}
+
+
+D.Tmin.Region[ "VarianceTminSmooth"] <- D.Tmin.Region[ "VarianceTminSmooth"] 
+Pil.Tmax.Region <- data.frame(Region = unique(D.Tmax.Region$Region))
+Pil.Tmax.Region <- Pil.Tmax.Region %>% mutate(#B1 = 0 ,
+  B2 = 0 , B3 = 0 , B4 = 0 ,
+  B5 = 0 , B6 = 0 , B7 = 0 , B8 = 0 ,
+  B9 = 0 , B10 = 0 , B11 = 0 , B12 = 0 , B13 = 0 )
+
+for (b0 in names(Pil.Tmax.Region)[2:13])
+{
+  for (Region0 in Pil.Tmax.Region$Region)
+  {
+    Pil.Tmax.Region[Pil.Tmax.Region$Region == Region0, b0] <- 
+      t(as.matrix( evalAlltmax_Dif[, b0])) %*% t( D.Tmax.Region[D.Tmax.Region$Region == Region0 , c(2:29)])
+  }
+}
+
+D.Tmax.Region$VarianceTmaxSmooth <- NA
+
+D.Tmax.Region[D.Tmax.Region$Region ==  "RRD"  , "VarianceTmaxSmooth"] <-
+  as.matrix(Pil.Tmax.Region[Pil.Tmax.Region$Region == "RRD"  , c(2:13) ])%*% 
+  Var_max_RRD_all %*%  
+  t( as.matrix(Pil.Tmax.Region[Pil.Tmax.Region$Region == "RRD"  , c(2:13)]))
+
+
+D.Tmax.Region[D.Tmax.Region$Region ==   "MKR"  , "VarianceTmaxSmooth"] <-
+  as.matrix(Pil.Tmax.Region[Pil.Tmax.Region$Region ==  "MKR" , c(2:13) ])%*% 
+  Var_max_other %*%  
+  t( as.matrix(Pil.Tmax.Region[Pil.Tmax.Region$Region ==  "MKR"  , c(2:13)]))
+
+D.Tmax.Region[D.Tmax.Region$Region =="NCC"  , "VarianceTmaxSmooth"] <-
+  as.matrix(Pil.Tmax.Region[Pil.Tmax.Region$Region =="NCC" , c(2:13) ])%*% 
+  Var_max_NCC_all %*%  
+  t( as.matrix(Pil.Tmax.Region[Pil.Tmax.Region$Region =="NCC"  , c(2:13)]))
+OtherRegion <- c( "SR",  "MNM",
+                  "CHR",   "MKR")
+
+
+D.Tmax.Region[D.Tmax.Region$Region =="CHR" , "VarianceTmaxSmooth"] <-
+  as.matrix(Pil.Tmax.Region[Pil.Tmax.Region$Region =="CHR", c(2:13) ])%*% 
+  Var_max_other %*%  
+  t( as.matrix(Pil.Tmax.Region[Pil.Tmax.Region$Region =="CHR"  , c(2:13)]))
+
+D.Tmax.Region[D.Tmax.Region$Region =="SR" , "VarianceTmaxSmooth"] <-
+  as.matrix(Pil.Tmax.Region[Pil.Tmax.Region$Region =="SR", c(2:13) ])%*% 
+  Var_max_other %*%  
+  t( as.matrix(Pil.Tmax.Region[Pil.Tmax.Region$Region =="SR" , c(2:13)]))
+
+D.Tmax.Region[D.Tmax.Region$Region =="MNM" , "VarianceTmaxSmooth"] <-
+  as.matrix(Pil.Tmax.Region[Pil.Tmax.Region$Region =="MNM", c(2:13) ])%*% 
+  Var_max_other %*%  
+  t( as.matrix(Pil.Tmax.Region[Pil.Tmax.Region$Region =="MNM" , c(2:13)]))
+
+
+D.Tmax.Region[ "VarianceTmaxSmooth"] <- D.Tmax.Region[ "VarianceTmaxSmooth"] 
+VarianceSmoothAll <- left_join(D.Tmax.Region[, c("Region", "VarianceTmaxSmooth")],
+                               D.Tmin.Region[, c("Region", "VarianceTminSmooth")])
+VarianceSmoothAll$Region  <- as.factor(VarianceSmoothAll$Region )
+levels(VarianceSmoothAll$Region ) <- c("SR", "CHR", "MDR", "NMM", "NCC", "RRD" )
+VarianceSmoothAll$Region <- factor(VarianceSmoothAll$Region, 
+                                   levels = c("NMM", "RRD", "NCC", "CHR",  "SR", "MDR" ))
+```
+
+
+```{r}
+VarianceSmoothAll$sdTmaxSmooth <- sqrt(VarianceSmoothAll$VarianceTmaxSmooth)
+VarianceSmoothAll$sdTminSmooth <- sqrt(VarianceSmoothAll$VarianceTminSmooth)
+#====Final variance for discrete regression
+VarianceDiscreteAll <- data.frame(Region = c("NMM", "RRD", "NCC", "CHR",  "SR", "MDR" ))
+VarianceDiscreteAll <- VarianceDiscreteAll %>% 
+  mutate( VarianceTminDiscrete = 0 , 
+          VarianceTmaxDiscrete = 0 )
+```
+
+```{r}
+clr.MKR.Tmax <- compositions::clr(D.Tmax.Region[D.Tmax.Region$Region ==  "MKR", c(2:29)])
+clr.MNM.Tmax <- compositions::clr(D.Tmax.Region[D.Tmax.Region$Region ==  "MNM", c(2:29)])
+clr.NCC.Tmax <- compositions::clr(D.Tmax.Region[D.Tmax.Region$Region == "NCC", c(2:29)])
+clr.CH.Tmax <- compositions::clr(D.Tmax.Region[D.Tmax.Region$Region ==  "CHR", c(2:29)])
+clr.SR.Tmax <- compositions::clr(D.Tmax.Region[D.Tmax.Region$Region ==  "SR" , c(2:29)])
+clr.RRD.Tmax <- compositions::clr(D.Tmax.Region[D.Tmax.Region$Region ==  "RRD" , c(2:29)])
+
+clr.MKR.Tmin <- compositions::clr(D.Tmin.Region[D.Tmin.Region$Region ==  "MKR", c(2:23)])
+clr.MNM.Tmin <- compositions::clr(D.Tmin.Region[D.Tmin.Region$Region ==  "MNM", c(2:23)])
+clr.NCC.Tmin <- compositions::clr(D.Tmin.Region[D.Tmin.Region$Region == "NCC", c(2:23)])
+clr.CH.Tmin <- compositions::clr(D.Tmin.Region[D.Tmin.Region$Region ==  "CHR", c(2:23)])
+clr.SR.Tmin <- compositions::clr(D.Tmin.Region[D.Tmin.Region$Region ==  "SR" , c(2:23)])
+clr.RRD.Tmin <- compositions::clr(D.Tmin.Region[D.Tmin.Region$Region ==  "RRD" , c(2:23)])
+
+VcovD <- compositions::ilrInv(vcov(mod_compo28 ))
+
+V_Tmax = compositions::ilrBase(D = 28)
+Var_other_discrete  <- vcov(mod_compo28 )[9:35, 9:35]
+Var_other_discrete  <- V_Tmax %*%Var_other_discrete  %*%t(V_Tmax)
+
+
+Var_NCC_discrete <- vcov(mod_compo28 )[57:83, 57:83]
+Var_NCC_discrete <-  V_Tmax %*% Var_NCC_discrete %*%t(V_Tmax)
+
+Var_RRD_discrete <- vcov(mod_compo28 )[84:110, 84:110]
+Var_RRD_discrete <-  V_Tmax %*% Var_RRD_discrete %*%t(V_Tmax)
+
+#---for tmin, there is only 1 covariance matrix
+V_Tmin = compositions::ilrBase(D = 22)
+Var_tmin_discrete <-  vcov(mod_compo28 )[36:56, 36:56]
+Var_tmin_discrete <-  V_Tmin %*% Var_tmin_discrete %*%t(V_Tmin)
+
+VarianceDiscreteAll[VarianceDiscreteAll$Region == "NMM", "VarianceTmaxDiscrete"] <-
+  t(clr.MNM.Tmax) %*%Var_other_discrete%*%clr.MNM.Tmax
+
+VarianceDiscreteAll[VarianceDiscreteAll$Region == "NCC", "VarianceTmaxDiscrete"] <-
+  t(clr.NCC.Tmax) %*%Var_NCC_discrete%*%clr.NCC.Tmax
+
+VarianceDiscreteAll[VarianceDiscreteAll$Region == "MDR", "VarianceTmaxDiscrete"] <-
+  t(clr.MKR.Tmax) %*%Var_other_discrete%*%clr.MKR.Tmax
+
+VarianceDiscreteAll[VarianceDiscreteAll$Region == "CHR", "VarianceTmaxDiscrete"] <-
+  t(clr.CH.Tmax) %*%Var_other_discrete%*%clr.CH.Tmax
+
+VarianceDiscreteAll[VarianceDiscreteAll$Region == "RRD", "VarianceTmaxDiscrete"] <-
+  t(clr.RRD.Tmax) %*%Var_RRD_discrete%*%clr.RRD.Tmax
+
+VarianceDiscreteAll[VarianceDiscreteAll$Region == "SR", "VarianceTmaxDiscrete"] <-
+  t(clr.SR.Tmax) %*%Var_other_discrete%*%clr.SR.Tmax
+
+VarianceDiscreteAll[VarianceDiscreteAll$Region == "NMM", "VarianceTminDiscrete"] <-
+  t(clr.MNM.Tmin) %*%Var_tmin_discrete%*%clr.MNM.Tmin
+
+VarianceDiscreteAll[VarianceDiscreteAll$Region == "NCC", "VarianceTminDiscrete"] <-
+  t(clr.NCC.Tmin) %*%Var_tmin_discrete%*%clr.NCC.Tmin
+
+VarianceDiscreteAll[VarianceDiscreteAll$Region == "MDR", "VarianceTminDiscrete"] <-
+  t(clr.MKR.Tmin) %*%Var_tmin_discrete%*%clr.MKR.Tmin
+
+
+VarianceDiscreteAll[VarianceDiscreteAll$Region == "CHR", "VarianceTminDiscrete"] <-
+  t(clr.CH.Tmin) %*%Var_tmin_discrete%*%clr.CH.Tmin
+
+VarianceDiscreteAll[VarianceDiscreteAll$Region == "RRD", "VarianceTminDiscrete"] <-
+  t(clr.RRD.Tmin) %*%Var_tmin_discrete%*%clr.RRD.Tmin
+
+VarianceDiscreteAll[VarianceDiscreteAll$Region == "SR", "VarianceTminDiscrete"] <-
+  t(clr.SR.Tmin) %*%Var_tmin_discrete%*%clr.SR.Tmin
+
+VarianceDiscreteAll$sdTmaxDiscrete <- sqrt(VarianceDiscreteAll$VarianceTmaxDiscrete)
+VarianceDiscreteAll$sdTminDiscrete <- sqrt(VarianceDiscreteAll$VarianceTminDiscrete)
+
+
+VarianceAll <- left_join(VarianceDiscreteAll[, c("Region", "sdTmaxDiscrete", "sdTminDiscrete")],
+                         VarianceSmoothAll[, c("Region", "sdTmaxSmooth", "sdTminSmooth")])
+
+
+D.Tmin$Region <- as.factor(D.Tmin$Region)
+levels(D.Tmin$Region ) <- c("SR", "CHR", "MDR", "NMM", "NCC", "RRD" )
+D.Tmin$Region <- factor(D.Tmin$Region, 
+                        levels = c("NMM", "RRD", "NCC", "CHR",  "SR", "MDR" ))
+
+D.Tmax$Region <- as.factor(D.Tmax$Region)
+levels(D.Tmax$Region ) <- c("SR", "CHR", "MDR", "NMM", "NCC", "RRD" )
+D.Tmax$Region <- factor(D.Tmax$Region, 
+                        levels = c("NMM", "RRD", "NCC", "CHR",  "SR", "MDR" ))
+
+
+D.Tmax.Region <- D.Tmax %>% 
+  select(Region) %>% 
+  group_by(Region) %>%
+  mutate(nregion = n()) %>% unique()
+
+
+Mean.Tmax.Region.Discrete <- D.Tmax %>% 
+  select(Region, ImpactTmaxDiscrete) %>%
+  group_by(Region) %>%
+  summarise(mean = mean(ImpactTmaxDiscrete))
+Mean.Tmax.Region.Discrete <- left_join(Mean.Tmax.Region.Discrete,  D.Tmax.Region)
+Mean.Tmax.Region.Discrete <- left_join(Mean.Tmax.Region.Discrete,   
+                                       VarianceDiscreteAll[, c("Region", "sdTmaxDiscrete")])
+
+Mean.Tmax.Region.Discrete <- Mean.Tmax.Region.Discrete %>% 
+  mutate(lwr = mean - (1.96*sdTmaxDiscrete)/sqrt(nregion),
+         upr = mean + (1.96*sdTmaxDiscrete)/sqrt(nregion)) %>%
+  select( Region,  mean, lwr, upr, sdTmaxDiscrete)
+
+
+
+Mean.Tmin.Region.Discrete <- D.Tmin %>% 
+  select(Region, ImpactTminDiscrete) %>%
+  group_by(Region) %>%
+  summarise(mean = mean(ImpactTminDiscrete))
+Mean.Tmin.Region.Discrete <- left_join(Mean.Tmin.Region.Discrete,  D.Tmax.Region)
+Mean.Tmin.Region.Discrete <- left_join(Mean.Tmin.Region.Discrete,   
+                                       VarianceDiscreteAll[, c("Region", "sdTminDiscrete")])
+
+Mean.Tmin.Region.Discrete <- Mean.Tmin.Region.Discrete %>% 
+  mutate(lwr = mean - (1.96*sdTminDiscrete)/sqrt(nregion),
+         upr = mean + (1.96*sdTminDiscrete)/sqrt(nregion)) %>%
+  select( Region,  mean, lwr, upr, sdTminDiscrete)
+
+
+Mean.Tmax.Region.Smooth <- D.Tmax %>% 
+  select(Region, ImpactTmaxSmooth) %>%
+  group_by(Region) %>%
+  summarise(mean = mean(ImpactTmaxSmooth))
+
+Mean.Tmax.Region.Smooth <- left_join(Mean.Tmax.Region.Smooth, D.Tmax.Region)
+Mean.Tmax.Region.Smooth <- left_join(Mean.Tmax.Region.Smooth, 
+                                     VarianceSmoothAll[, c("Region", "sdTmaxSmooth")])
+Mean.Tmax.Region.Smooth <- Mean.Tmax.Region.Smooth %>% 
+  mutate(lwr = mean - 1.96*sdTmaxSmooth/sqrt(nregion),
+         upr = mean + 1.96*sdTmaxSmooth/sqrt(nregion)) %>%
+  select( Region,  mean, lwr, upr, sdTmaxSmooth)
+
+
+
+Mean.Tmin.Region.Smooth <- D.Tmin %>% 
+  select(Region, ImpactTminSmooth) %>%
+  group_by(Region) %>%
+  summarise(mean = mean(ImpactTminSmooth))
+
+Mean.Tmin.Region.Smooth <- left_join(Mean.Tmin.Region.Smooth, D.Tmax.Region)
+Mean.Tmin.Region.Smooth <- left_join(Mean.Tmin.Region.Smooth, 
+                                     VarianceSmoothAll[, c("Region", "sdTminSmooth")])
+
+Mean.Tmin.Region.Smooth <- Mean.Tmin.Region.Smooth %>% 
+  mutate(lwr = mean - 1.96*sdTminSmooth/sqrt(nregion),
+         upr = mean + 1.96*sdTminSmooth/sqrt(nregion))
+
+Mean.Tmax.Region.All <- cbind(Mean.Tmax.Region.Discrete, Mean.Tmax.Region.Smooth[, c(2:5)])
+Mean.Tmin.Region.All <- cbind(Mean.Tmin.Region.Discrete, Mean.Tmin.Region.Smooth[, c(2:5)])
+Mean.Tmax.Region.All <- Mean.Tmax.Region.All[c(5, 4, 6, 1, 3, 2), ]
+Mean.Tmin.Region.All <- Mean.Tmin.Region.All[c(5, 4, 6, 1, 3, 2), ]
+names(Mean.Tmin.Region.All) <- c("Region",  "meanminDiscrete", "lwrminDiscrete", "uprminDiscrete",   "sdTminDiscrete", "meanTminSmooth", "nregion",  "sdTminSmooth",   "lwrTminSmooth") 
+cbind(Mean.Tmax.Region.All[, c(1, 6,7,8)], Mean.Tmin.Region.All[, c( 6,7,8)])
+
+
+```
+
+
+
+# Supplementary Figures
+
+
+
+## Figure SF4
+
+```{r}
+op <- par(mfrow = c(2, 2))
+plot(mod_compo28)
+par(op)
+```
+
+```{r}
+op <- par(mfrow = c(2, 2))
+reg.spline
+par(op)
+```
+
+
+
+## Figure SF5
+
+```{r}
+betahistS_RRD0 <- data.frame(value = as.numeric(betahistS_RRD),
+                             Temperature = namebinlist)
+op <- par(mfrow = c(1, 1))
+ggplot(betahistS_RRD0 ,
+       aes(x = Temperature, y = value)) +
+  geom_bar(stat="identity", position=position_dodge())+
+  ggtitle("RRD")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, size = 5,  hjust = 1))+
+  theme(axis.text.y = element_text( size = 5, hjust = 1))+
+  theme(axis.title.y = element_text(size = 5))+
+  theme(axis.title.y = element_text(size = 5))+
+  theme(plot.title = element_text( color = "grey20", size = 5, face = "bold")) +
+  theme(legend.text = element_text( size = 5))
+par(op)
+```
+
+```{r}
+betahistS_NCC0 <- data.frame(value = as.numeric(betahistS_NCC),
+                             Temperature = namebinlist)
+op <- par(mfrow = c(1, 1))
+ggplot(betahistS_NCC0 ,
+       aes(x = Temperature, y = value)) +
+  geom_bar(stat="identity", position=position_dodge())+
+  ggtitle("NCC")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, size = 5,  hjust = 1))+
+  theme(axis.text.y = element_text( size = 5, hjust = 1))+
+  theme(axis.title.y = element_text(size = 5))+
+  theme(axis.title.y = element_text(size = 5))+
+  theme(plot.title = element_text( color = "grey20", size = 5, face = "bold")) +
+  theme(legend.text = element_text( size = 5))
+par(op)
+```
+
+```{r}
+betahistS_other0 <- data.frame(value = as.numeric(betahistS_other),
+                             Temperature = namebinlist)
+op <- par(mfrow = c(1, 1))
+ggplot(betahistS_other0 ,
+       aes(x = Temperature, y = value)) +
+  geom_bar(stat="identity", position=position_dodge())+
+  ggtitle("Other regions")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, size = 5,  hjust = 1))+
+  theme(axis.text.y = element_text( size = 5, hjust = 1))+
+  theme(axis.title.y = element_text(size = 5))+
+  theme(axis.title.y = element_text(size = 5))+
+  theme(plot.title = element_text( color = "grey20", size = 5, face = "bold")) +
+  theme(legend.text = element_text( size = 5))
+par(op)
+```
+## Figure SF6
+
+```{r}
+op <- par(mfrow = c(2, 1))
+barplot(Coef.Raw.clr_NCC$Coef.Raw.clr~ Coef.Raw.clr_NCC$namebinlist,
+        main  = "NCC", 
+        las = 2, ylab = "Value",
+        cex.names = 1.2, xlab = " ",
+        ylim = c(-0.25, 0.5))
+barplot(Coef.Raw.clr_other$Coef.Raw.clr ~ Coef.Raw.clr_other$namebinlist,
+        main  = "Other regions",
+        las = 2, ylab = "Value",
+        cex.names = 1.2, xlab = " ",
+        ylim = c(-0.25, 0.5))
+par(op)
+```
+
+
+## Figure SF7
+
+```{r}
+betahistS_tmin0 <- data.frame(value = as.numeric(betahistS_tmin),
+                             Temperature = namebinlistmin)
+op <- par(mfrow = c(1, 1))
+ggplot(betahistS_tmin0 ,
+       aes(x = Temperature, y = value)) +
+  geom_bar(stat="identity", position=position_dodge())+
+  ggtitle("Tmin")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, size = 5,  hjust = 1))+
+  theme(axis.text.y = element_text( size = 5, hjust = 1))+
+  theme(axis.title.y = element_text(size = 5))+
+  theme(axis.title.y = element_text(size = 5))+
+  theme(plot.title = element_text( color = "grey20", size = 5, face = "bold")) +
+  theme(legend.text = element_text( size = 5))
+par(op)
+```
+
+```{r}
+op <- par(mfrow = c(1, 1))
+barplot(Coef.Raw.clr_tmin$Coef.Raw.clr ~ Coef.Raw.clr_tmin$namebinlist,
+        #main  = "Tmin",
+        las = 2, ylab = "Value",
+        cex.names = 1.2, xlab = " ")
+par(op)
+```
+
+
+
+
+
+## Figure SF8
+
+```{r}
+op <- par(mfrow = c(1, 2))
+betacurvetminL2 <- CFR.tminB1K11$Zbasis_finner %*% coef(reg.spline )[21:32] #L2
+betacurvetminB2 <- fcenLRinvF(CFR.tminB1K11$Partition, betacurvetminL2, k= 1) #B2
+
+plot(betacurvetminB2$knots, betacurvetminB2$estimate,
+     xlab = "Temperature", ylab = "Density",
+     type = "l",
+     lwd = 2, cex.lab = 1, 
+     cex.axis = 1, ylim = c(0.03, 0.06))
+
+matplot(CFR.tminB1K11$Partition, betacurvetminL2, type = "l", las = 1, 
+        xlab = "Temperature", ylab = "clr(density)", 
+        lwd = 2, cex.lab = 1, 
+        cex.axis = 1,
+        ylim = c(-0.2, 0.2))
+
+abline(h = 0, col = "red", lty = 2, lwd = 1)
+abline(v = CFR.tminB1K11$knots, col = "gray", lty = 2, lwd = 1)
+par(op)
+
+```
+
+## Figure SF9
+
+```{r}
+
+Clim_Oct22Tmin <- Clim_Oct22Tmin0
+Clim_Oct22Tmin<- left_join(Clim_Oct22Tmin, Regiondata[, c("pro", "Region")] )
+Clim_Oct22Tmin <- Clim_Oct22Tmin %>% 
+  mutate(Region = case_when(Region =="Mekong Delta" ~ "MKR",
+                            Region == "Midlands and Northern Mountainous Areas" ~ "MNM",
+                            Region =="Red River Delta"  ~ "RRD",
+                            Region ==" Southeastern Area" ~ "SR",
+                            Region =="Northern and Coastal Central Region"  ~ "NCC",
+                            Region =="Central Highlands" ~ "CHR"))
+
+
+Tmin2016_MKR <- Clim_Oct22Tmin[Clim_Oct22Tmin$Region== "MKR"& Clim_Oct22Tmin$year == 2016,  c(3:24)]
+Tmin2016_MKR = acomp(Tmin2016_MKR)
+
+Tmin2016_RRD <- Clim_Oct22Tmin[Clim_Oct22Tmin$Region== "RRD"& Clim_Oct22Tmin$year == 2016,  c(3:24)]
+Tmin2016_RRD = acomp(Tmin2016_RRD)
+
+Tmin2016_NCC <- Clim_Oct22Tmin[Clim_Oct22Tmin$Region== "NCC"& Clim_Oct22Tmin$year == 2016,  c(3:24)]
+Tmin2016_NCC = acomp(Tmin2016_NCC)
+
+Tmin2016_CH <- Clim_Oct22Tmin[Clim_Oct22Tmin$Region== "CHR"& Clim_Oct22Tmin$year == 2016,  c(3:24)]
+Tmin2016_CH = acomp(Tmin2016_CH)
+
+Tmin2016_MKR <- Clim_Oct22Tmin[Clim_Oct22Tmin$Region== "MKR"& Clim_Oct22Tmin$year == 2016,  c(3:24)]
+Tmin2016_MKR = acomp(Tmin2016_MKR)
+
+Tmin2099_MKR <- CMIP5tminALL[CMIP5tminALL$Region== "MKR",  c(2:23)]
+Tmin2099_MKR = acomp(Tmin2099_MKR)
+
+Tmin2099_RRD <- CMIP5tminALL[CMIP5tminALL$Region== "RRD",  c(2:23)]
+Tmin2099_RRD = acomp(Tmin2099_RRD)
+
+Tmin2099_NCC <- CMIP5tminALL[CMIP5tminALL$Region== "NCC",  c(2:23)]
+Tmin2099_NCC = acomp(Tmin2099_NCC)
+
+Tmin2099_CH <- CMIP5tminALL[CMIP5tminALL$Region== "CHR",  c(2:23)]
+Tmin2099_CH = acomp(Tmin2099_CH)
+
+Tmin2099_MKR <- CMIP5tminALL[CMIP5tminALL$Region== "MKR",  c(2:23)]
+Tmin2099_MKR = acomp(Tmin2099_MKR)
+
+
+
+namebinlist_Tmin <- c("7-8", "8-9", "9-10", "10-11", "11-12",#only for tmin
+                      "12-13", "13-14", "14-15", "15-16", "16-17", "17-18", #tmin and tmax
+                      "18-19", "19-20", "20-21", "21-22", "22-23",#tmin and tmax
+                      "23-24", "24-25", "25-26", "26-27", "27-28", "28-29") #tmin and tmax
+TminMDR <- c(as.vector(mean(Tmin2016_MKR)), as.vector(mean(Tmin2099_MKR)))
+
+TminMDR <- data.frame(value = TminMDR,
+                      Scenario = c(rep("Observed", 22),  rep("RCP2.6", 22)),
+                      namebin = rep(namebinlist_Tmin , 2))      
+TminMDR$Scenario <- factor(TminMDR$Scenario,     levels = c("Observed",    "RCP2.6"))
+TminMDR$namebin <- factor(TminMDR $namebin, 
+                          levels  = namebinlist_Tmin)
+
+
+TminRRD <- c(as.vector(mean(Tmin2016_RRD)),   as.vector(mean(Tmin2099_RRD)))
+
+TminRRD <- data.frame(value = TminRRD,
+                      Scenario = c(rep("Observed", 22),  rep("RCP2.6", 22)),
+                      namebin = rep(namebinlist_Tmin , 2))      
+TminRRD$Scenario <- factor(TminRRD$Scenario,  levels = c("Observed",    "RCP2.6"))
+TminRRD$namebin <- factor(TminRRD $namebin, 
+                          levels  = namebinlist_Tmin)
+
+TminNCC <- c(as.vector(mean(Tmin2016_NCC)),    as.vector(mean(Tmin2099_NCC)))
+
+TminNCC <- data.frame(value = TminNCC,
+                      Scenario = c(rep("Observed", 22),  rep("RCP2.6", 22)),
+                      namebin = rep(namebinlist_Tmin , 2))      
+TminNCC$Scenario <- factor(TminNCC$Scenario,
+                           levels = c("Observed",  "RCP2.6"))
+TminNCC$namebin <- factor(TminNCC $namebin,   levels  = namebinlist_Tmin)
+
+
+TminCH <- c(as.vector(mean(Tmin2016_CH)),  as.vector(mean(Tmin2099_CH)))
+
+TminCH <- data.frame(value = TminCH,
+                     Scenario = c(rep("Observed", 22),   rep("RCP2.6", 22)),
+                     namebin = rep(namebinlist_Tmin , 2))      
+TminCH$Scenario <- factor(TminCH$Scenario,
+                          levels = c("Observed",   "RCP2.6"))
+TminCH$namebin <- factor(TminCH$namebin,  levels  = namebinlist_Tmin)
+
+```
+
+```{r}
+pTminMDR <- ggplot(data=TminMDR[TminMDR$Scenario %in% c("Observed", "RCP2.6"), ], aes(x = namebin , y =value, fill = Scenario)) +
+  geom_bar(stat="identity", position=position_dodge() )+
+  scale_fill_manual(values=c("orange", "blue"))+#, "orange"))+
+  ylab ("Frequency")  + xlab ("Temperature")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  ggtitle("MDR region")+
+  theme(
+    axis.title.x = element_text(size = 5),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.title.y = element_text(size = 5))
+
+pTminRRD <- ggplot(data=TminRRD[TminRRD$Scenario %in% c("Observed", "RCP2.6"), ], aes(x = namebin , y =value, fill = Scenario)) +
+  geom_bar(stat="identity", position=position_dodge() )+
+  scale_fill_manual(values=c("orange", "blue"))+#, "orange"))+
+  ylab ("Frequency")  + xlab ("Temperature")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  ggtitle("RRD region")+
+  theme(
+    axis.title.x = element_text(size = 5),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.title.y = element_text(size = 5))
+
+
+pTminNCC <- ggplot(data=TminNCC[TminNCC$Scenario %in% c("Observed", "RCP2.6"), ], aes(x = namebin , y =value, fill = Scenario)) +
+  geom_bar(stat="identity", position=position_dodge() )+
+  scale_fill_manual(values=c("orange", "blue"))+#, "orange"))+
+  ylab ("Frequency")  + xlab ("Temperature")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  ggtitle("NCC region")+
+  theme( axis.title.x = element_text(size = 5),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.title.y = element_text(size = 5))
+
+pTminCH <- ggplot(data=TminCH[TminCH$Scenario %in% c("Observed", "RCP2.6"), ], aes(x = namebin , y =value, fill = Scenario)) +
+  geom_bar(stat="identity", position=position_dodge() )+
+  scale_fill_manual(values=c("orange", "blue"))+#, "orange"))+
+  ylab ("Frequency")  + xlab ("Temperature")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  ggtitle("CHR region")+
+  theme(
+    axis.title.x = element_text(size = 5),
+    axis.text.x = element_text(size = 5),
+    axis.text.y = element_text(size = 5),
+    axis.title.y = element_text(size = 5))
+
+grid.arrange(pTminRRD , pTminNCC , pTminCH , pTminMDR,  nrow = 2)
+```
+
+## Figure SF10
+
+```{r}
+P1 <- ggplot(NewdataNBmelt, aes(x=YIELDFhat, y=value, group=variable)) +
+  geom_line(aes(color=variable), cex = 1)+
+  scale_color_manual(values=c(rep("grey", 19), "blue", "red", rep("grey", 7)))+
+  geom_vline(xintercept = YIELDF0, col = "green",
+             cex = 1)+ 
+  coord_flip()+
+  ylab("Bins relative frequencies")+
+  xlab("Predicted rice yield")+
+  annotate("label", y = 0.25, x = 6.57 , label = "Ninh Binh in 2016") +
+  theme(axis.text.x = element_text( size = 5,  hjust = 1))+
+  theme(axis.text.y = element_text( size = 5, hjust = 1))+
+  theme(axis.title.y = element_text(size = 5))+
+  theme(axis.title.y = element_text(size = 5))+
+  theme(plot.title = element_text( color = "grey20", size = 5, face = "bold")) +
+  theme(legend.text = element_text( size = 5))
+P2 <- ggplot(NewdataNBmeltV3, aes(x = variable, y = value, 
+                                               group = h,
+                                               color  = h)) +
+  geom_smooth(se = F, method = 'loess', n = 800, 
+              span = .4, cex = 0.5,
+              degree = 5)+
+ # theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, size = 5,  hjust = 1))+
+  theme(axis.text.y = element_text(angle = 90, vjust = 0.5, size = 5, hjust = 1))+
+  theme(axis.title.y = element_text(size = 5))+
+  theme(axis.title.y = element_text(size = 5))+
+  theme(plot.title = element_text( color = "grey20", size = 5, face = "bold")) +
+  theme(legend.text = element_text( size = 5))+
+  ylab("Relative frequency") + xlab("Temperature")
+grid.arrange(P1, P2,  nrow = 2)
+```
+
+
+
+
+
+## Table ST6
+
+```{r}
+cbind(Mean.Tmax.Region.All[, c(1, 2, 3, 4)], Mean.Tmin.Region.All[, c( 2, 3, 4)])
+```
+
+
+## Table ST7
+```{r}
+V_Tmax = compositions::ilrBase(D = 28)
+Var_other_discrete  <- vcov(mod_compo28 )[9:35, 9:35]
+Var_other_discrete  <- V_Tmax %*%Var_other_discrete  %*%t(V_Tmax) # Cov(clr(beta))
+
+Var_NCC_discrete <- vcov(mod_compo28 )[57:83, 57:83]
+Var_NCC_discrete <-  V_Tmax %*% Var_NCC_discrete %*%t(V_Tmax)
+
+Var_RRD_discrete <- vcov(mod_compo28 )[84:110, 84:110]
+Var_RRD_discrete <-  V_Tmax %*% Var_RRD_discrete %*%t(V_Tmax)
+
+Var_max_RRD_all <- Var_Tmax + Var_RRD + 2*Var_Tmax_RRD # Doing the sum!, 4/12/2025
+Var_max_NCC_all <- Var_Tmax + Var_NCC + 2*Var_Tmax_NCC
+Var_max_other <- vcov(reg.spline )[9:20, 9:20]
+
+#---for tmin, there is only 1 covariance matrix
+V_Tmin = compositions::ilrBase(D = 22)
+Var_tmin_discrete <-  vcov(mod_compo28 )[36:56, 36:56]
+Var_tmin_discrete <-  V_Tmin %*% Var_tmin_discrete %*%t(V_Tmin)
+
+
+tau_RRD <- Coef.Raw.clr_RRD
+#Coef.Raw.clr_RRD 
+tau_RRD$tau <- 0
+for (i in 1:27)
+{
+  tau_RRD$tau[i] <- (tau_RRD$Coef.Raw.clr[i+1] - tau_RRD$Coef.Raw.clr[i])/2
+}
+
+tau_RRD$Var <- 0
+for (i in 1:27)
+{
+  tau_RRD$Var[i] <- (Var_RRD_discrete[i+1, i+1] + Var_RRD_discrete[i, i] - 2*Var_RRD_discrete[i, i+1])/4
+}
+
+tau_RRD$se <- sqrt(tau_RRD$Var)
+tau_RRD$tau_up <- tau_RRD$tau + 1.96*tau_RRD$se
+tau_RRD$tau_low <- tau_RRD$tau - 1.96*tau_RRD$se
+
+
+tau_RRD$tau_low <- round(tau_RRD$tau_low, 2)
+tau_RRD$tau_up <- round(tau_RRD$tau_up, 2)
+TableDiscrete <- tau_RRD[1:27, c("namebinlist","Coef.Raw.clr","se","tau_low", "tau" ,"tau_up" )]
+TableDiscrete$namebinlist2 <- tau_RRD[2:28, c("namebinlist")]
+TableDiscrete$Coef.Raw.clr2 <- round(tau_RRD[2:28, c("Coef.Raw.clr")],3)
+TableDiscrete[, c("namebinlist","Coef.Raw.clr",  "se",     
+                  "tau_low","tau","tau_up")]
+
+```
+

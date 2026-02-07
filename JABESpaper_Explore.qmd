@@ -1,0 +1,1181 @@
+---
+title: "Scalar-on-distribution regression for assessing the impact of climate change on rice yield in Vietnam"
+author: "Thi Huong TRINH; Christine Thomas-Agnan; Michel Simioni"
+format:
+  html:
+    toc: true
+    embed-resources: true
+    self-contained-math: true
+    self-contained: true
+    code-fold: true
+    code-summary: "Show the code"
+    number-sections: true
+    standalone: true
+---
+
+# Load data
+
+```{r setup,include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+options(scipen = 999)
+```
+
+
+```{r}
+##=================================Load Packages ===============================
+
+library(ggplot2)         
+library(tidyverse) 
+require(splines)
+require(robCompositions)
+require(compositions)
+library(reshape2)
+require(gridExtra)
+library(RColorBrewer)
+require(viridis)
+require(spdep)
+require(stringr)
+library("CoDaImpact")
+##=================================Load data ===============================
+
+load("rain_dataALL.RData")
+load("LtmaxALL.RData") # raw data tmax
+load("LtminALL.RData") #raw data tmin
+load("AlphaALL_tmin.RData")# smoothing alpha parameter for tmin
+load("AlphaALL_tmax.RData") # smoothing alpha parameter for tmax
+load("RiceALL.RData")
+load("CFR.tmaxB1K11.RDATA") # ZB basis for 11 knots (9 inside knots)
+load("CBsplinesB1K11.RDATA")# CB basis for 11 knots (9 inside knots)
+load("CFR.tmaxB1K9.RDATA")# ZB basis for 9 knots (7 inside knots)
+load("CBsplinesB1K9.RDATA")# CB basis for 9 knots (7 inside knots)
+load("CFR.tminB1K11.RDATA") # ZB basis for 11 knots (9 inside knots)
+load("clrfdetailALLTmin.RDATA") # Smooth spline for tmin
+load("clrfdetailALL.RDATA")# Smooth spline for tmax
+#load("DATA_ALL_clrinv.RDATA")
+#load("DATA_ALL_clrinvTmin.RDATA")
+load("Clim_Oct22Tmax.RDATA") # Coda vector for tmax
+load("Clim_Oct22Tmin.RDATA")# Coda vector for tmin
+load( "CMIP5tminALL.RDATA") # Tmin in 2099
+load( "CMIP5tmaxALL.RDATA")# Tmax in 2099
+load("evalAlltmin_Dif.RDATA")# p_il for tmin
+load("evalAlltmax_Dif.RDATA")# p_il for tmax
+source("FunctionCRF_V6_bin1_11knots.R") 
+
+require(gtsummary)
+library(kableExtra)
+
+#----Load Vietnamese map
+library(dda)
+library(MVN)
+library(sf)
+
+data(vietnam_regions)
+data(vietnam_provinces)
+```
+
+```{r}
+#Save for later
+Clim_Oct22Tmax0 <- Clim_Oct22Tmax
+Clim_Oct22Tmin0 <- Clim_Oct22Tmin
+listyear <- c( "1987","1988","1989","1990","1991","1992","1993","1994","1995","1996",
+               "1997","1998","1999","2000","2001","2002","2003","2004","2005","2006",
+               "2007","2008","2009","2010","2011","2012","2013","2014","2015","2016")
+```
+
+
+# Explore
+
+## Figure 1
+
+```{r}
+
+op <- par(mfcol=c(2,2))
+#7 inside knots
+matplot(CBsplinesB1K9$Partition, 
+        CBsplinesB1K9[, 2:(2+10-1 )], type = "l", las = 1, 
+        xlab = "Temperature", ylab = "Density", 
+        col =  rainbow(12 ), lwd = 2, 
+        cex.lab = 1.5, 
+        cex.axis = 1,
+        ylim = c(0.02, 0.065))#,
+abline(v = CFR.tmaxB1K9$knots, col = "gray", lty = 2)
+matplot(CFR.tmaxB1K9$Partition, CFR.tmaxB1K9$Zbasis_finner, 
+        type = "l", lty = 1, 
+        las = 1, xlab = "Temperature", ylab = "Clr(density)", 
+        col = rainbow(10 ),
+        cex.lab = 1.5, 
+        cex.axis = 1,
+        ylim = c(-0.6, 0.6))
+abline(v = CFR.tmaxB1K9$knots, col = "gray", lty = 2)
+
+#9 inside knots
+
+matplot(CBsplinesB1K11$Partition, 
+        CBsplinesB1K11[, 2:(2+12-1 )], type = "l", las = 1, 
+        xlab = "Temperature", ylab = "Density", 
+        col =  rainbow(12 ), lwd = 2, 
+        cex.lab = 1.5, 
+        cex.axis = 1,
+        ylim = c(0.019, 0.072))#,
+abline(v = CFR.tmaxB1K11$knots, col = "gray", lty = 2)
+matplot(CFR.tmaxB1K11$Partition, CFR.tmaxB1K11$Zbasis_finner, 
+        type = "l", lty = 1, 
+        las = 1, xlab = "Temperature", ylab = "Clr(density)", 
+        col = rainbow(12 ),
+        cex.lab = 1.5, 
+        cex.axis = 1,
+        ylim = c(-0.6, 0.6))
+abline(v = CFR.tmaxB1K11$knots, col = "gray", lty = 2)
+par(op)
+```
+
+## Figure 2
+
+```{r}
+
+order = 4 
+ord = 4
+der = 2
+yrname <- "1995"
+provincename <- "HANOI"
+
+alpha0 <- 0.9
+
+weather0 <- LtmaxALL[[yrname]][[provincename]]$tmaxALL[LtmaxALL[[yrname]][[provincename]]$tmaxALL> -10 &
+                                                         LtmaxALL[[yrname]][[provincename]]$tmaxALL<50] 
+typeweathername <- "tmax"
+don_weather0 <- funCS(weather0, "tmax")
+
+sfun_weather0 <- stepfun(x = don_weather0$bins[-c(1, length(don_weather0$bins))],
+                         y = don_weather0$density)
+CFR <-  compositionalSplineF(t = don_weather0$midpoint,
+                             clrf = don_weather0$clrf, 
+                             knots = don_weather0$knots,
+                             knots_beta0 = don_weather0$knots,
+                             w = don_weather0$w, order, 
+                             der, alpha = alpha0, 
+                             spline.plot = FALSE, 
+                             basis.plot = FALSE, tw = "tmin",
+                             namemain = "") 
+CFR.hist.spline <- CFR$Zbasis_finner %*% CFR$ZB_coef
+f.fcenLRinv <- fcenLRinvF(CFR$Partition, CFR.hist.spline) 
+```
+
+```{r}
+Figur2R <- compositionalSplineF(t = don_weather0$midpoint,
+                             clrf = don_weather0$clrf, 
+                             knots = don_weather0$knots,
+                             knots_beta0 = don_weather0$knots,
+                             w = don_weather0$w, order, 
+                             der, alpha = alpha0, 
+                             spline.plot  = FALSE, 
+                             basis.plot = FALSE, tw = "tmin",
+                             namemain = "") # Figur4
+op <- par(mfcol=c(1,2))
+plot(sfun_weather0, 
+     main =" ", #"Compare density in B^2 before and after smoothing", 
+     xlab = "Temperature", ylab = "Density",
+     lwd = 2,
+     cex.lab = 1.5, 
+     cex.axis = 1,
+     ylim = c(0, max(don_weather0$density, f.fcenLRinv$estimate)+0.01),
+     xlim = c(min(f.fcenLRinv$knots), max(f.fcenLRinv$knots)))
+lines(f.fcenLRinv$knots, f.fcenLRinv$estimate,
+      col = "blue", lty = 1, lwd = 1)
+abline(v = don_weather0$knots,
+       col = "gray", lty = 2, lwd = 1)
+
+matplot(Figur2R$Partition, Figur2R$spline0, type = "l", las = 1, 
+        xlab = "Temperature", ylab = "Clr(density)", 
+        col = "darkblue", lwd = 2, cex.lab = 1, 
+        cex.axis = 1, 
+        ylim = c(min(c(min(Figur2R$clrf), min(Figur2R$spline0))),
+                 max(c(max(Figur2R$clrf), 
+                       max(Figur2R$spline0)))))
+#, 
+#       main = paste("Compositional spline of ", tw, " at province ",   namemain))
+matpoints(Figur2R$t, Figur2R$clrf, pch = 8, col = "darkblue", cex = 1.3)
+abline(h = 0, col = "red", lty = 2, lwd = 1)
+abline(v = Figur2R$knots, col = "gray", lty = 2, lwd = 1)
+par(op)
+```
+## Table 1
+
+```{r}
+Clim_Oct22Tmax1 <- Clim_Oct22Tmax0
+Clim_Oct22Tmax1$province <- Clim_Oct22Tmax1$pro 
+Clim_Oct22Tmax1 <- left_join(Clim_Oct22Tmax1, unique(RiceALL[, c("province", "Region")]))
+Clim_Oct22Tmax1$Region <- as.factor(Clim_Oct22Tmax1$Region)
+levels(Clim_Oct22Tmax1$Region) <- c("NMM", "RRD", "NCC","CHR","SR",  "MDR")
+
+Clim_Oct22Tmax1 <- left_join(Clim_Oct22Tmax1, 
+                             RiceALL[, c("province", "year", "YIELDF", "Precipitation" )])
+
+Des1 <- tbl_summary(Clim_Oct22Tmax1[, c("Precipitation", "YIELDF", "Region"  )],
+                    by = Region,
+                    digits = everything() ~ 2,
+                    statistic = list(all_continuous() ~ "{mean} ({sd})" ))
+Des1.latex <- as_kable(Des1) 
+Des1.latex <- kable(Des1, "latex" ) %>% kable_styling(latex_options = "basic",
+                                                      position = "center")
+
+```
+
+
+```{r}
+Des1
+```
+
+
+## Figure 3
+
+```{r}
+collist <- viridis(6, alpha = 1, begin = 0, end = 1,
+                   direction = 1, option = "D")
+Rice.Region <- RiceALL %>% 
+  group_by(year, Region) %>%
+  summarise( YIELDF = mean( YIELDF))
+Rice.Region$Region <- as.factor(Rice.Region$Region)
+levels(Rice.Region$Region) <- c("SR", "CHR", "MDR", "NMM",
+                                "NCC", "RRD")
+
+
+op <- par(mfcol=c(1,1))
+ggplot(Rice.Region, aes(x =year, y = YIELDF, group = Region, color = Region)) +
+  geom_line(lwd = 1 )+
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, size = 5,  hjust = 1))+
+  theme(axis.text.y = element_text(angle = 90, vjust = 0.5, size = 5, hjust = 1))+
+  theme(axis.title.y = element_text(size = 5))+
+  theme(axis.title.y = element_text(size = 5))+
+  theme(plot.title = element_text( color = "grey20", size = 5, face = "bold")) +
+  theme(legend.text = element_text( size = 10))+
+  ylab("Rice yield") + xlab("Year")
+par(op)
+
+```
+
+## Figure 4
+
+```{r}
+
+vietnam_regions$name[vietnam_regions$name == "Midlands and Northern Mountainous Areas"] <- "Northern Midlands and Mountains"
+vietnam_regions$name[vietnam_regions$name == "Northern and Coastal Central Region"] <- "North Central Coast"
+vietnam_regions$name[vietnam_regions$name ==  "Southeastern Area" ] <- "Southeast"
+lat_order_code <- c("NMM", "RRD", "NCC", "CHR", "SR", "MDR")
+lat_order <- c(
+  "Northern Midlands and Mountains",
+  "Red River Delta",
+  "North Central Coast",
+  "Central Highlands",
+  "Southeast",
+  "Mekong Delta"
+)
+
+vietnam_regions$name <- factor(str_wrap(vietnam_regions$name, 20), 
+                               levels = str_wrap(lat_order, 20))
+vietnam_regions$code <- factor(vietnam_regions$code, levels = lat_order_code)
+
+
+#===========Plot Vietnamese map: DONE
+vietnam_provinces |>
+  left_join(vietnam_regions, by = c("region" = "code")) |>
+  rename(region_name = name) |>
+  ggplot(aes(fill = region_name)) +
+  scale_fill_viridis_d() +
+  #theme_legend_inside +
+  geom_sf() +
+  scale_x_continuous(breaks = seq(from = -180, to = 180, by = 2)) +
+  labs(x = "Longitude", y = "Latitude", fill = "Region")
+
+```
+
+```{r}
+Clim_Oct22Tmax$province <- Clim_Oct22Tmax$pro 
+Clim_Oct22Tmax <- left_join(Clim_Oct22Tmax, RiceALL[, c("province", "Region")])
+Tmax_RRD_initial <- Clim_Oct22Tmax[Clim_Oct22Tmax$Region== "Red River Delta"&  Clim_Oct22Tmax$year %in% c(1987, 1988, 1989), c(3:30)]
+Tmax_RRD_initial = acomp(Tmax_RRD_initial)
+Tmax_RRD_initial <- mean(Tmax_RRD_initial)
+
+Tmax_RRD_after <- Clim_Oct22Tmax[Clim_Oct22Tmax$Region== "Red River Delta"& 
+                                     Clim_Oct22Tmax$year %in% c(2014, 2015, 2016), c(3:30)]
+Tmax_RRD_after = acomp(Tmax_RRD_after)
+Tmax_RRD_after <- mean(Tmax_RRD_after)
+
+
+Tmax_MDR_initial <- Clim_Oct22Tmax[Clim_Oct22Tmax$Region==  "Mekong Delta"& 
+                                     Clim_Oct22Tmax$year %in% c(1987, 1988, 1989), c(3:30)]
+Tmax_MDR_initial = acomp(Tmax_MDR_initial)
+Tmax_MDR_initial <- mean(Tmax_MDR_initial)
+
+
+Tmax_MDR_after <- Clim_Oct22Tmax[Clim_Oct22Tmax$Region==  "Mekong Delta"& 
+                                   Clim_Oct22Tmax$year %in% c(2014, 2015, 2016), c(3:30)]
+Tmax_MDR_after = acomp(Tmax_MDR_after)
+Tmax_MDR_after <- mean(Tmax_MDR_after)
+
+
+Tmax_NCC_initial <- Clim_Oct22Tmax[Clim_Oct22Tmax$Region ==  "Northern and Coastal Central Region"& 
+                                     Clim_Oct22Tmax$year %in% c(1987, 1988, 1989), c(3:30)]
+Tmax_NCC_initial = acomp(Tmax_NCC_initial)
+Tmax_NCC_initial <- mean(Tmax_NCC_initial)
+
+
+Tmax_NCC_after <- Clim_Oct22Tmax[Clim_Oct22Tmax$Region ==  "Northern and Coastal Central Region"& 
+                                   Clim_Oct22Tmax$year %in% c(2014, 2015, 2016), c(3:30)]
+Tmax_NCC_after = acomp(Tmax_NCC_after)
+Tmax_NCC_after <- mean(Tmax_NCC_after)
+
+
+Tmax_CHR_initial <- Clim_Oct22Tmax[Clim_Oct22Tmax$Region ==  "Central Highlands"& 
+                                     Clim_Oct22Tmax$year %in% c(1987, 1988, 1989), c(3:30)]
+Tmax_CHR_initial = acomp(Tmax_CHR_initial)
+Tmax_CHR_initial <- mean(Tmax_CHR_initial)
+
+
+Tmax_CHR_after <- Clim_Oct22Tmax[Clim_Oct22Tmax$Region ==  "Central Highlands"& 
+                                   Clim_Oct22Tmax$year %in% c(2014, 2015, 2016), c(3:30)]
+Tmax_CHR_after = acomp(Tmax_CHR_after)
+Tmax_CHR_after <- mean(Tmax_CHR_after)
+
+Tmax_MNM_initial <- Clim_Oct22Tmax[Clim_Oct22Tmax$Region ==  "Midlands and Northern Mountainous Areas"& 
+                                     Clim_Oct22Tmax$year %in% c(1987, 1988, 1989), c(3:30)]
+Tmax_MNM_initial = acomp(Tmax_MNM_initial)
+Tmax_MNM_initial <- mean(Tmax_MNM_initial)
+
+
+Tmax_MNM_after <- Clim_Oct22Tmax[Clim_Oct22Tmax$Region ==  "Midlands and Northern Mountainous Areas"& 
+                                   Clim_Oct22Tmax$year %in% c(2014, 2015, 2016), c(3:30)]
+Tmax_MNM_after = acomp(Tmax_MNM_after)
+Tmax_MNM_after <- mean(Tmax_MNM_after)
+
+Tmax_SR_initial <- Clim_Oct22Tmax[Clim_Oct22Tmax$Region ==  " Southeastern Area"& 
+                                    Clim_Oct22Tmax$year %in% c(1987, 1988, 1989), c(3:30)]
+Tmax_SR_initial = acomp(Tmax_SR_initial)
+Tmax_SR_initial <- mean(Tmax_SR_initial)
+
+
+Tmax_SR_after <- Clim_Oct22Tmax[Clim_Oct22Tmax$Region == " Southeastern Area"& 
+                                  Clim_Oct22Tmax$year %in% c(2014, 2015, 2016), c(3:30)]
+Tmax_SR_after = acomp(Tmax_SR_after)
+Tmax_SR_after <- mean(Tmax_SR_after)
+
+namebinlist <- c("12-13", "13-14", "14-15", "15-16", "16-17", "17-18",
+                 "18-19", "19-20", "20-21", "21-22", "22-23",
+                 "23-24", "24-25", "25-26", "26-27",
+                 "27-28", "28-29", "29-30", "30-31", "31-32", "32-33",
+                 "33-34", "34-35", "35-36", "36-37",
+                 "37-38", "38-39", "39-40")
+```
+
+
+```{r}
+RRD_hist <- data.frame(period = c(rep("initial", 28), rep("after", 28)),
+  value = c(as.numeric(Tmax_RRD_initial), as.numeric(Tmax_RRD_after)),
+  namebinlist = c(namebinlist, namebinlist))
+RRD_hist$period <- factor(RRD_hist$period, levels = c("initial", "after"))
+
+#png(filename = "RRD.hist.png", width = 1000, height = 1000)
+ggplot(data=RRD_hist, aes(x=namebinlist, y=value, fill=period)) +
+  geom_bar(stat="identity", position=position_dodge())+
+  scale_fill_manual(values=c( "black", "#66A61E"))+
+  theme(axis.text.x = element_text( angle = 90, vjust = 0.5, size = 20,  hjust = 1))+
+  theme(axis.text.y = element_text( size = 10, hjust = 1))+
+  theme(axis.title.x = element_text(size = 10))+
+  theme(axis.title.y = element_text(size = 10))+
+  theme(plot.title = element_text( color = "grey20", size = 5, face = "bold")) +
+  theme(legend.text = element_text( size = 10))+
+  theme(legend.title = element_text( size = 10),
+        legend.position = "none")+
+  ylab("Relative frequency") + xlab("Temperature")+ 
+annotate("text", y = 0.2, x = 8 ,size = 12,
+         label = "RRD region", fontface = "bold") +
+  ylim(0, 0.25)
+#dev.off()
+```
+
+
+
+```{r}
+MNM_hist <- data.frame(period = c(rep("initial", 28), rep("after", 28)),
+                       value = c(as.numeric(Tmax_MNM_initial), as.numeric(Tmax_MNM_after)),
+                       namebinlist = c(namebinlist, namebinlist))
+MNM_hist$period <- factor(MNM_hist$period, levels = c("initial", "after"))
+
+
+#png(filename = "NMM.hist.png", width = 1000, height = 1000)
+ggplot(data=MNM_hist, aes(x=namebinlist, y=value, fill=period)) +
+  geom_bar(stat="identity", position=position_dodge())+
+  scale_fill_manual(values=c( "black", "#1B9E77"))+
+  theme(axis.text.x = element_text( angle = 90, vjust = 0.5, size = 20,  hjust = 1))+
+  theme(axis.text.y = element_text( size = 10, hjust = 1))+
+  theme(axis.title.x = element_text(size = 10))+
+  theme(axis.title.y = element_text(size = 10))+
+  theme(plot.title = element_text( color = "grey20", size = 5, face = "bold")) +
+  theme(legend.text = element_text( size = 10))+
+  theme(legend.title = element_text( size = 10),
+        legend.position = "none")+
+  ylab("Relative frequency") + xlab("Temperature")+
+annotate("text", y = 0.2, x = 8 ,size = 12,
+         label = "NMM region", fontface = "bold") +
+  ylim(0, 0.25)
+#dev.off()
+```
+
+
+```{r}
+NCC_hist <- data.frame(period = c(rep("initial", 28), rep("after", 28)),
+                       value = c(as.numeric(Tmax_NCC_initial), as.numeric(Tmax_NCC_after)),
+                       namebinlist = c(namebinlist, namebinlist))
+NCC_hist$period <- factor(NCC_hist$period, levels = c("initial", "after"))
+
+#png(filename = "NCC.hist.png", width = 1000, height = 1000)
+ggplot(data=NCC_hist, aes(x=namebinlist, y=value, fill=period)) +
+  geom_bar(stat="identity", position=position_dodge())+
+  scale_fill_manual(values=c( "black", "#2166AC"))+
+  theme(axis.text.x = element_text( angle = 90, vjust = 0.5, size = 20,  hjust = 1))+
+  theme(axis.text.y = element_text( size = 10, hjust = 1))+
+  theme(axis.title.x = element_text(size = 10))+
+  theme(axis.title.y = element_text(size = 10))+
+  theme(plot.title = element_text( color = "grey20", size = 5, face = "bold")) +
+  theme(legend.text = element_text( size = 10))+
+  theme(legend.title = element_text( size = 10),
+        legend.position = "none")+
+  ylab("Relative frequency") + xlab("Temperature")+
+  annotate("text", y = 0.2, x = 8 ,size = 12,
+           label = "NCC region", fontface = "bold") +
+  ylim(0, 0.25)
+#dev.off()
+```
+
+
+```{r}
+MDR_hist <- data.frame(period = c(rep("initial", 28), rep("after", 28)),
+                       value = c(as.numeric(Tmax_MDR_initial), as.numeric(Tmax_MDR_after)),
+                       namebinlist = c(namebinlist, namebinlist))
+MDR_hist$period <- factor(MDR_hist$period, levels = c("initial", "after"))
+
+
+#png(filename = "MDR.hist.png", width = 1000, height = 1000)
+ggplot(data=MDR_hist, aes(x=namebinlist, y=value, fill=period)) +
+  geom_bar(stat="identity", position=position_dodge())+
+  scale_fill_manual(values=c( "black", "#E6AB02"))+
+  theme(axis.text.x = element_text( angle = 90, vjust = 0.5, size = 20,  hjust = 1))+
+  theme(axis.text.y = element_text( size = 10, hjust = 1))+
+  theme(axis.title.x = element_text(size = 10))+
+  theme(axis.title.y = element_text(size = 10))+
+  theme(plot.title = element_text( color = "grey20", size = 5, face = "bold")) +
+  theme(legend.text = element_text( size = 10))+
+  theme(legend.title = element_text( size = 10),
+        legend.position = "none")+
+  ylab("Relative frequency") + xlab("Temperature")+
+  annotate("text", y = 0.2, x = 8 ,size = 12,
+           label = "MDR region", fontface = "bold") +
+  ylim(0, 0.25)
+
+#dev.off()
+```
+
+
+
+```{r}
+CHR_hist <- data.frame(period = c(rep("initial", 28), rep("after", 28)),
+                       value = c(as.numeric(Tmax_CHR_initial), as.numeric(Tmax_CHR_after)),
+                       namebinlist = c(namebinlist, namebinlist))
+CHR_hist$period <- factor(CHR_hist$period, levels = c("initial", "after"))
+
+
+#png(filename = "CHR.hist.png", width = 1000, height = 1000)
+ggplot(data=CHR_hist, aes(x=namebinlist, y=value, fill=period)) +
+  geom_bar(stat="identity", position=position_dodge())+
+  scale_fill_manual(values=c( "black", "#F4A582"))+
+  theme(axis.text.x = element_text( angle = 90, vjust = 0.5, size = 20,  hjust = 1))+
+  theme(axis.text.y = element_text( size = 10, hjust = 1))+
+  theme(axis.title.x = element_text(size = 10))+
+  theme(axis.title.y = element_text(size = 10))+
+  theme(plot.title = element_text( color = "grey20", size = 5, face = "bold")) +
+  theme(legend.text = element_text( size = 10))+
+  theme(legend.title = element_text( size = 10),
+        legend.position = "none")+
+  ylab("Relative frequency") + xlab("Temperature")+
+annotate("text", y = 0.2, x = 8 ,size = 12,
+         label = "CHR region", fontface = "bold") +
+  ylim(0, 0.25)
+#dev.off()
+```
+
+
+
+```{r}
+SR_hist <- data.frame(period = c(rep("initial", 28), rep("after", 28)),
+                      value = c(as.numeric(Tmax_SR_initial), as.numeric(Tmax_SR_after)),
+                      namebinlist = c(namebinlist, namebinlist))
+SR_hist$period <- factor(SR_hist$period, levels = c("initial", "after"))
+
+
+#png(filename = "SR.hist.png", width = 1000, height = 1000)
+ggplot(data=SR_hist, aes(x=namebinlist, y=value, fill=period)) +
+  geom_bar(stat="identity", position=position_dodge())+
+  scale_fill_manual(values=c( "black", "#D6604D"))+
+  theme(axis.text.x = element_text( angle = 90, vjust = 0.5, size = 20,  hjust = 1))+
+  theme(axis.text.y = element_text( size = 10, hjust = 1))+
+  theme(axis.title.x = element_text(size = 10))+
+  theme(axis.title.y = element_text(size = 10))+
+  theme(plot.title = element_text( color = "grey20", size = 5, face = "bold")) +
+  theme(legend.text = element_text( size = 10))+
+  theme(legend.title = element_text( size = 10),
+        legend.position = "none")+
+  ylab("Relative frequency") + xlab("Temperature")+
+  annotate("text", y = 0.2, x = 8 ,size = 12,
+           label = "SR region", fontface = "bold") +
+  ylim(0, 0.25)
+#dev.off()
+```
+
+
+# Supplementary Figures
+
+## Figure SF1
+
+```{r}
+
+op <- par(mfcol=c(1,1))
+ggplot(RiceALL, aes(x=year, y=YIELDF)) + 
+  geom_boxplot(fill = "cornflowerblue")+
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, size = 5,  hjust = 1))+
+  theme(axis.text.y = element_text(angle = 90, vjust = 0.5, size = 5, hjust = 1))+
+  theme(axis.title.y = element_text(size = 5))+
+  theme(axis.title.y = element_text(size = 5))+
+  theme(plot.title = element_text( color = "grey20", size = 5, face = "bold")) +
+  theme(legend.text = element_text( size = 5))+
+  ylab("Rice yield") + xlab("Year")
+par(op)
+```
+
+## Table ST1
+
+```{r}
+Clim_Oct22Tmax <- Clim_Oct22Tmax0
+#===count zero
+t0.tmax <- data.frame(s = paste0("s", 1:28),
+                             count0 = NA,
+                             percent0 = NA)
+
+t0.tmax[t0.tmax$s == "s1", "count0"] <- length(Clim_Oct22Tmax$s1[Clim_Oct22Tmax$s1<0.0000001])
+t0.tmax[t0.tmax$s == "s2", "count0"] <- length(Clim_Oct22Tmax$s2[Clim_Oct22Tmax$s2<0.0000001])
+t0.tmax[t0.tmax$s == "s3", "count0"] <- length(Clim_Oct22Tmax$s3[Clim_Oct22Tmax$s3<0.0000001])
+t0.tmax[t0.tmax$s == "s4", "count0"] <- length(Clim_Oct22Tmax$s4[Clim_Oct22Tmax$s4<0.0000001])
+t0.tmax[t0.tmax$s == "s5", "count0"] <- length(Clim_Oct22Tmax$s5[Clim_Oct22Tmax$s5<0.0000001])
+t0.tmax[t0.tmax$s == "s6", "count0"] <- length(Clim_Oct22Tmax$s6[Clim_Oct22Tmax$s6<0.0000001])
+t0.tmax[t0.tmax$s == "s7", "count0"] <- length(Clim_Oct22Tmax$s7[Clim_Oct22Tmax$s7<0.0000001])
+t0.tmax[t0.tmax$s == "s8", "count0"] <- length(Clim_Oct22Tmax$s8[Clim_Oct22Tmax$s8<0.0000001])
+t0.tmax[t0.tmax$s == "s9", "count0"] <- length(Clim_Oct22Tmax$s9[Clim_Oct22Tmax$s9<0.0000001])
+t0.tmax[t0.tmax$s == "s10", "count0"] <- length(Clim_Oct22Tmax$s10[Clim_Oct22Tmax$s10<0.0000001])
+t0.tmax[t0.tmax$s == "s11", "count0"] <- length(Clim_Oct22Tmax$s11[Clim_Oct22Tmax$s11<0.0000001])
+t0.tmax[t0.tmax$s == "s12", "count0"] <- length(Clim_Oct22Tmax$s12[Clim_Oct22Tmax$s12<0.0000001])
+t0.tmax[t0.tmax$s == "s13", "count0"] <- length(Clim_Oct22Tmax$s13[Clim_Oct22Tmax$s13<0.0000001])
+t0.tmax[t0.tmax$s == "s14", "count0"] <- length(Clim_Oct22Tmax$s14[Clim_Oct22Tmax$s14<0.0000001])
+t0.tmax[t0.tmax$s == "s15", "count0"] <- length(Clim_Oct22Tmax$s15[Clim_Oct22Tmax$s15<0.0000001])
+t0.tmax[t0.tmax$s == "s16", "count0"] <- length(Clim_Oct22Tmax$s16[Clim_Oct22Tmax$s16<0.0000001])
+t0.tmax[t0.tmax$s == "s17", "count0"] <- length(Clim_Oct22Tmax$s17[Clim_Oct22Tmax$s17<0.0000001])
+t0.tmax[t0.tmax$s == "s18", "count0"] <- length(Clim_Oct22Tmax$s18[Clim_Oct22Tmax$s18<0.0000001])
+t0.tmax[t0.tmax$s == "s19", "count0"] <- length(Clim_Oct22Tmax$s19[Clim_Oct22Tmax$s19<0.0000001])
+t0.tmax[t0.tmax$s == "s20", "count0"] <- length(Clim_Oct22Tmax$s20[Clim_Oct22Tmax$s20<0.0000001])
+t0.tmax[t0.tmax$s == "s21", "count0"] <- length(Clim_Oct22Tmax$s21[Clim_Oct22Tmax$s21<0.0000001])
+t0.tmax[t0.tmax$s == "s22", "count0"] <- length(Clim_Oct22Tmax$s22[Clim_Oct22Tmax$s22<0.0000001])
+t0.tmax[t0.tmax$s == "s23", "count0"] <- length(Clim_Oct22Tmax$s23[Clim_Oct22Tmax$s23<0.0000001])
+t0.tmax[t0.tmax$s == "s24", "count0"] <- length(Clim_Oct22Tmax$s24[Clim_Oct22Tmax$s24<0.0000001])
+t0.tmax[t0.tmax$s == "s25", "count0"] <- length(Clim_Oct22Tmax$s25[Clim_Oct22Tmax$s25<0.0000001])
+t0.tmax[t0.tmax$s == "s26", "count0"] <- length(Clim_Oct22Tmax$s26[Clim_Oct22Tmax$s26<0.0000001])
+t0.tmax[t0.tmax$s == "s27", "count0"] <- length(Clim_Oct22Tmax$s27[Clim_Oct22Tmax$s27<0.0000001])
+t0.tmax[t0.tmax$s == "s28", "count0"] <- length(Clim_Oct22Tmax$s28[Clim_Oct22Tmax$s28<0.0000001])
+t0.tmax[t0.tmax$s == "s29", "count0"] <- length(Clim_Oct22Tmax$s29[Clim_Oct22Tmax$s29<0.0000001])
+t0.tmax[t0.tmax$s == "s30", "count0"] <- length(Clim_Oct22Tmax$s29[Clim_Oct22Tmax$s30<0.0000001])
+t0.tmax$percent0 <- round(t0.tmax$count0*100/1890, 2)
+t0.tmax
+```
+
+## Table ST2
+
+```{r}
+Clim_Oct22Tmin <- Clim_Oct22Tmin0
+t0.tmin <- data.frame(s = paste0("s", 1:22),
+                      count0 = NA,
+                      percent0 = NA)
+t0.tmin[t0.tmin$s == "s1", "count0"] <- length(Clim_Oct22Tmin$s1[Clim_Oct22Tmin$s1 < 0.0000001])
+t0.tmin[t0.tmin$s == "s2", "count0"] <- length(Clim_Oct22Tmin$s2[Clim_Oct22Tmin$s2 < 0.0000001])
+t0.tmin[t0.tmin$s == "s3", "count0"] <- length(Clim_Oct22Tmin$s3[Clim_Oct22Tmin$s3 < 0.0000001])
+t0.tmin[t0.tmin$s == "s4", "count0"] <- length(Clim_Oct22Tmin$s4[Clim_Oct22Tmin$s4 < 0.0000001])
+t0.tmin[t0.tmin$s == "s5", "count0"] <- length(Clim_Oct22Tmin$s5[Clim_Oct22Tmin$s5 < 0.0000001])
+t0.tmin[t0.tmin$s == "s6", "count0"] <- length(Clim_Oct22Tmin$s6[Clim_Oct22Tmin$s6 < 0.0000001])
+t0.tmin[t0.tmin$s == "s7", "count0"] <- length(Clim_Oct22Tmin$s7[Clim_Oct22Tmin$s7 < 0.0000001])
+t0.tmin[t0.tmin$s == "s8", "count0"] <- length(Clim_Oct22Tmin$s8[Clim_Oct22Tmin$s8 < 0.0000001])
+t0.tmin[t0.tmin$s == "s9", "count0"] <- length(Clim_Oct22Tmin$s9[Clim_Oct22Tmin$s9 < 0.0000001])
+t0.tmin[t0.tmin$s == "s10", "count0"] <- length(Clim_Oct22Tmin$s10[Clim_Oct22Tmin$s10 < 0.0000001])
+t0.tmin[t0.tmin$s == "s11", "count0"] <- length(Clim_Oct22Tmin$s11[Clim_Oct22Tmin$s11 < 0.0000001])
+t0.tmin[t0.tmin$s == "s12", "count0"] <- length(Clim_Oct22Tmin$s12[Clim_Oct22Tmin$s12 < 0.0000001])
+t0.tmin[t0.tmin$s == "s13", "count0"] <- length(Clim_Oct22Tmin$s13[Clim_Oct22Tmin$s13 < 0.0000001])
+t0.tmin[t0.tmin$s == "s14", "count0"] <- length(Clim_Oct22Tmin$s14[Clim_Oct22Tmin$s14 < 0.0000001])
+t0.tmin[t0.tmin$s == "s15", "count0"] <- length(Clim_Oct22Tmin$s15[Clim_Oct22Tmin$s15 < 0.0000001])
+t0.tmin[t0.tmin$s == "s16", "count0"] <- length(Clim_Oct22Tmin$s16[Clim_Oct22Tmin$s16 < 0.0000001])
+t0.tmin[t0.tmin$s == "s17", "count0"] <- length(Clim_Oct22Tmin$s17[Clim_Oct22Tmin$s17 < 0.0000001])
+t0.tmin[t0.tmin$s == "s18", "count0"] <- length(Clim_Oct22Tmin$s18[Clim_Oct22Tmin$s18 < 0.0000001])
+t0.tmin[t0.tmin$s == "s19", "count0"] <- length(Clim_Oct22Tmin$s19[Clim_Oct22Tmin$s19 < 0.0000001])
+t0.tmin[t0.tmin$s == "s20", "count0"] <- length(Clim_Oct22Tmin$s20[Clim_Oct22Tmin$s20 < 0.0000001])
+t0.tmin[t0.tmin$s == "s21", "count0"] <- length(Clim_Oct22Tmin$s21[Clim_Oct22Tmin$s21 < 0.0000001])
+t0.tmin[t0.tmin$s == "s22", "count0"] <- length(Clim_Oct22Tmin$s22[Clim_Oct22Tmin$s22 < 0.0000001])
+t0.tmin$percent0 <- round(t0.tmin$count0*100/1890, 2)
+t0.tmin
+
+```
+
+## Figure SF2
+
+### Replaced by 1e-8
+
+```{r}
+source("FunctionCRF_V6_bin1_11knots_changeZero_10_8.R")
+
+order = 4 
+ord = 4
+der = 2
+
+yrname <- "1995"
+provincename <- "HANOI"
+
+alpha0 <- 0.9308
+
+weather0 <- LtmaxALL[[yrname]][[provincename]]$tmaxALL[LtmaxALL[[yrname]][[provincename]]$tmaxALL> -10 &
+                                                         LtmaxALL[[yrname]][[provincename]]$tmaxALL<50] 
+typeweathername <- "tmax"
+don_weather0 <- funCS(weather0, "tmax")
+
+
+sfun_weather0 <- stepfun(x = don_weather0$bins[-c(1, length(don_weather0$bins))],
+                         y = don_weather0$density)
+
+CFR.tmax <-  compositionalSplineF(t = don_weather0$midpoint,
+                                  clrf = don_weather0$clrf, 
+                                  knots = don_weather0$knots,
+                                  knots_beta0 = don_weather0$knots,
+                                  w = don_weather0$w, order, der, 
+                                  alpha = alpha0, 
+                                  spline.plot = FALSE, 
+                                  basis.plot = FALSE, 
+                                  tw = "tmax",
+                                  namemain = paste (yrname, provincename))
+n_basic <- dim(CFR.tmax$Zbasis_finner)[2] 
+HN.8 <- c(10^(-8), alpha0, CFR.tmax$ZB_coef)
+CFR.hist.spline <- CFR.tmax$Zbasis_finner %*% CFR.tmax$ZB_coef
+f.fcenLRinv <- fcenLRinvF(CFR.tmax$Partition, CFR.hist.spline) 
+
+plot(sfun_weather0, 
+     main ="Replace by 10^(-8) in Ha Noi province",, 
+     xlab = "Temperature", ylab = "Density",
+     lwd = 2,
+     cex.lab = 1, 
+     cex.axis = 1,
+     cex.main=1,
+     ylim = c(0, 0.20),
+     xlim = c(12, 40))
+lines(f.fcenLRinv$knots, f.fcenLRinv$estimate,
+      col = "blue", lty = 1, lwd = 1)
+abline(v = don_weather0$knots,
+       col = "gray", lty = 2, lwd = 1)
+```
+
+### Replaced by 1e-7
+
+```{r}
+source("FunctionCRF_V6_bin1_11knots_changeZero.R")
+order = 4 
+ord = 4
+der = 2
+
+yrname <- "1995"
+provincename <- "HANOI"
+
+alpha0 <- 0.9426 
+
+weather0 <- LtmaxALL[[yrname]][[provincename]]$tmaxALL[LtmaxALL[[yrname]][[provincename]]$tmaxALL> -10 &
+                                                         LtmaxALL[[yrname]][[provincename]]$tmaxALL<50] 
+typeweathername <- "tmax"
+don_weather0 <- funCS(weather0, "tmax")
+
+
+sfun_weather0 <- stepfun(x = don_weather0$bins[-c(1, length(don_weather0$bins))],
+                         y = don_weather0$density)
+
+CFR.tmax <-  compositionalSplineF(t = don_weather0$midpoint,
+                                  clrf = don_weather0$clrf, 
+                                  knots = don_weather0$knots,
+                                  knots_beta0 = don_weather0$knots,
+                                  w = don_weather0$w, order, der, 
+                                  alpha = alpha0, 
+                                  spline.plot = FALSE, 
+                                  basis.plot = FALSE, 
+                                  tw = "tmax",
+                                  namemain = paste (yrname, provincename))
+n_basic <- dim(CFR.tmax$Zbasis_finner)[2] 
+HN.7 <- c(10^(-7), alpha0, CFR.tmax$ZB_coef)
+CFR.hist.spline <- CFR.tmax$Zbasis_finner %*% CFR.tmax$ZB_coef
+f.fcenLRinv <- fcenLRinvF(CFR.tmax$Partition, CFR.hist.spline) 
+
+plot(sfun_weather0, 
+     main ="Replace by 10^(-7) in Ha Noi province", 
+     xlab = "Temperature", ylab = "Density",
+     lwd = 2,
+     cex.lab = 1, 
+     cex.axis = 1,
+     cex.main=1,
+     ylim = c(0, 0.20),
+     xlim = c(12, 40))
+lines(f.fcenLRinv$knots, f.fcenLRinv$estimate,
+      col = "blue", lty = 1, lwd = 1)
+abline(v = don_weather0$knots,
+       col = "gray", lty = 2, lwd = 1)
+```
+
+### Replaced by 1e-6
+
+```{r}
+source("FunctionCRF_V6_bin1_11knots_changeZero_10_6.R")
+order = 4 
+ord = 4
+der = 2
+
+yrname <- "1995"
+provincename <- "HANOI"
+
+alpha0 <- 0.9426
+
+weather0 <- LtmaxALL[[yrname]][[provincename]]$tmaxALL[LtmaxALL[[yrname]][[provincename]]$tmaxALL> -10 &
+                                                         LtmaxALL[[yrname]][[provincename]]$tmaxALL<50] 
+typeweathername <- "tmax"
+don_weather0 <- funCS(weather0, "tmax")
+
+
+sfun_weather0 <- stepfun(x = don_weather0$bins[-c(1, length(don_weather0$bins))],
+                         y = don_weather0$density)
+
+CFR.tmax <-  compositionalSplineF(t = don_weather0$midpoint,
+                                  clrf = don_weather0$clrf, 
+                                  knots = don_weather0$knots,
+                                  knots_beta0 = don_weather0$knots,
+                                  w = don_weather0$w, order, der, 
+                                  alpha = alpha0, 
+                                  spline.plot = FALSE, 
+                                  basis.plot = FALSE, 
+                                  tw = "tmax",
+                                  namemain = paste (yrname, provincename))
+n_basic <- dim(CFR.tmax$Zbasis_finner)[2] 
+HN.6 <- c(10^(-6), alpha0, CFR.tmax$ZB_coef)
+CFR.hist.spline <- CFR.tmax$Zbasis_finner %*% CFR.tmax$ZB_coef
+f.fcenLRinv <- fcenLRinvF(CFR.tmax$Partition, CFR.hist.spline) 
+
+plot(sfun_weather0, 
+     main ="Replace by 10^(-6) in Ha Noi province", 
+     xlab = "Temperature", ylab = "Density",
+     lwd = 2,
+     cex.lab = 1, 
+     cex.axis = 1,
+     cex.main=1,
+     ylim = c(0, 0.20),
+     xlim = c(12, 40))
+lines(f.fcenLRinv$knots, f.fcenLRinv$estimate,
+      col = "blue", lty = 1, lwd = 1)
+abline(v = don_weather0$knots,
+       col = "gray", lty = 2, lwd = 1)
+```
+
+### Replaced by 1e-5
+
+```{r}
+source("FunctionCRF_V6_bin1_11knots_changeZero_10_5.R")
+order = 4 
+ord = 4
+der = 2
+
+yrname <- "1995"
+provincename <- "HANOI"
+
+alpha0 <- 0.9427
+
+weather0 <- LtmaxALL[[yrname]][[provincename]]$tmaxALL[LtmaxALL[[yrname]][[provincename]]$tmaxALL> -10 &
+                                                         LtmaxALL[[yrname]][[provincename]]$tmaxALL<50] 
+typeweathername <- "tmax"
+don_weather0 <- funCS(weather0, "tmax")
+
+
+sfun_weather0 <- stepfun(x = don_weather0$bins[-c(1, length(don_weather0$bins))],
+                         y = don_weather0$density)
+
+CFR.tmax <-  compositionalSplineF(t = don_weather0$midpoint,
+                                  clrf = don_weather0$clrf, 
+                                  knots = don_weather0$knots,
+                                  knots_beta0 = don_weather0$knots,
+                                  w = don_weather0$w, order, der, 
+                                  alpha = alpha0, 
+                                  spline.plot = FALSE, 
+                                  basis.plot = FALSE, 
+                                  tw = "tmax",
+                                  namemain = paste (yrname, provincename))
+n_basic <- dim(CFR.tmax$Zbasis_finner)[2] 
+HN.5 <- c(10^(-5), alpha0, CFR.tmax$ZB_coef)
+CFR.hist.spline <- CFR.tmax$Zbasis_finner %*% CFR.tmax$ZB_coef
+f.fcenLRinv <- fcenLRinvF(CFR.tmax$Partition, CFR.hist.spline) 
+
+plot(sfun_weather0, 
+     main ="Replace by 10^(-5) in Ha Noi province", 
+     xlab = "Temperature", ylab = "Density",
+     lwd = 2,
+     cex.lab = 1, 
+     cex.axis = 1,
+     cex.main=1,
+     ylim = c(0, 0.20),
+     xlim = c(12, 40))
+lines(f.fcenLRinv$knots, f.fcenLRinv$estimate,
+      col = "blue", lty = 1, lwd = 1)
+abline(v = don_weather0$knots,
+       col = "gray", lty = 2, lwd = 1)
+```
+
+### Replaced by 1e-3
+
+```{r}
+source("FunctionCRF_V6_bin1_11knots_changeZero_10_3.R")
+order = 4 
+ord = 4
+der = 2
+
+yrname <- "1995"
+provincename <- "HANOI"
+
+alpha0 <- 0.7311
+
+weather0 <- LtmaxALL[[yrname]][[provincename]]$tmaxALL[LtmaxALL[[yrname]][[provincename]]$tmaxALL> -10 &
+                                                         LtmaxALL[[yrname]][[provincename]]$tmaxALL<50] 
+typeweathername <- "tmax"
+don_weather0 <- funCS(weather0, "tmax")
+
+
+sfun_weather0 <- stepfun(x = don_weather0$bins[-c(1, length(don_weather0$bins))],
+                         y = don_weather0$density)
+
+CFR.tmax <-  compositionalSplineF(t = don_weather0$midpoint,
+                                  clrf = don_weather0$clrf, 
+                                  knots = don_weather0$knots,
+                                  knots_beta0 = don_weather0$knots,
+                                  w = don_weather0$w, order, der, 
+                                  alpha = alpha0, 
+                                  spline.plot = FALSE, 
+                                  basis.plot = FALSE, 
+                                  tw = "tmax",
+                                  namemain = paste (yrname, provincename))
+n_basic <- dim(CFR.tmax$Zbasis_finner)[2] 
+HN.3 <- c(10^(-3), alpha0, CFR.tmax$ZB_coef)
+CFR.hist.spline <- CFR.tmax$Zbasis_finner %*% CFR.tmax$ZB_coef
+f.fcenLRinv <- fcenLRinvF(CFR.tmax$Partition, CFR.hist.spline) 
+
+plot(sfun_weather0, 
+     main ="Replace by 10^(-3) in Ha Noi province", 
+     xlab = "Temperature", ylab = "Density",
+     lwd = 2,
+     cex.lab = 1, 
+     cex.axis = 1,
+     cex.main=1,
+     ylim = c(0, 0.20),
+     xlim = c(12, 40))
+lines(f.fcenLRinv$knots, f.fcenLRinv$estimate,
+      col = "blue", lty = 1, lwd = 1)
+abline(v = don_weather0$knots,
+       col = "gray", lty = 2, lwd = 1)
+```
+
+## Table ST3
+
+```{r}
+HN <- rbind(HN.8, HN.7)
+HN <- rbind(HN, HN.6)
+HN <- rbind(HN, HN.5)
+HN <- rbind(HN, HN.3)
+HN[, c(3:14)] <- round(HN[, c(3:14)], 2)
+HN
+```
+
+## Figure SF3
+
+### Replaced by 1e-8
+
+```{r}
+source("FunctionCRF_V6_bin1_11knots_changeZero_10_8.R")
+
+order = 4 
+ord = 4
+der = 2
+
+yrname <- "1995"
+provincename <- "DONGTHAP"
+
+alpha0 <- 0.0474
+
+weather0 <- LtmaxALL[[yrname]][[provincename]]$tmaxALL[LtmaxALL[[yrname]][[provincename]]$tmaxALL> -10 &
+                                                         LtmaxALL[[yrname]][[provincename]]$tmaxALL<50] 
+typeweathername <- "tmax"
+don_weather0 <- funCS(weather0, "tmax")
+
+
+sfun_weather0 <- stepfun(x = don_weather0$bins[-c(1, length(don_weather0$bins))],
+                         y = don_weather0$density)
+
+CFR.tmax <-  compositionalSplineF(t = don_weather0$midpoint,
+                                  clrf = don_weather0$clrf, 
+                                  knots = don_weather0$knots,
+                                  knots_beta0 = don_weather0$knots,
+                                  w = don_weather0$w, order, der, 
+                                  alpha = alpha0, 
+                                  spline.plot = FALSE, 
+                                  basis.plot = FALSE, 
+                                  tw = "tmax",
+                                  namemain = paste (yrname, provincename))
+n_basic <- dim(CFR.tmax$Zbasis_finner)[2] 
+DT.8 <- c(10^(-8), alpha0, CFR.tmax$ZB_coef)
+CFR.hist.spline <- CFR.tmax$Zbasis_finner %*% CFR.tmax$ZB_coef
+f.fcenLRinv <- fcenLRinvF(CFR.tmax$Partition, CFR.hist.spline) 
+
+ plot(sfun_weather0, 
+     main ="Replace by 10^(-8) in Dong Thap province",, 
+     xlab = "Temperature", ylab = "Density",
+     lwd = 2,
+     cex.lab = 1, 
+     cex.axis = 1,
+     cex.main=1,
+     ylim = c(0, 0.3),
+     xlim = c(12, 40))
+lines(f.fcenLRinv$knots, f.fcenLRinv$estimate,
+      col = "blue", lty = 1, lwd = 1)
+abline(v = don_weather0$knots,
+       col = "gray", lty = 2, lwd = 1)
+```
+
+### Replaced by 1e-7
+
+```{r}
+source("FunctionCRF_V6_bin1_11knots_changeZero.R")
+order = 4 
+ord = 4
+der = 2
+
+yrname <- "1995"
+provincename <- "DONGTHAP"
+
+alpha0 <- 0.0573
+
+weather0 <- LtmaxALL[[yrname]][[provincename]]$tmaxALL[LtmaxALL[[yrname]][[provincename]]$tmaxALL> -10 &
+                                                         LtmaxALL[[yrname]][[provincename]]$tmaxALL<50] 
+typeweathername <- "tmax"
+don_weather0 <- funCS(weather0, "tmax")
+
+
+sfun_weather0 <- stepfun(x = don_weather0$bins[-c(1, length(don_weather0$bins))],
+                         y = don_weather0$density)
+
+CFR.tmax <-  compositionalSplineF(t = don_weather0$midpoint,
+                                  clrf = don_weather0$clrf, 
+                                  knots = don_weather0$knots,
+                                  knots_beta0 = don_weather0$knots,
+                                  w = don_weather0$w, order, der, 
+                                  alpha = alpha0, 
+                                  spline.plot = FALSE, 
+                                  basis.plot = FALSE, 
+                                  tw = "tmax",
+                                  namemain = paste (yrname, provincename))
+n_basic <- dim(CFR.tmax$Zbasis_finner)[2] 
+DT.7 <- c(10^(-7), alpha0, CFR.tmax$ZB_coef)
+CFR.hist.spline <- CFR.tmax$Zbasis_finner %*% CFR.tmax$ZB_coef
+f.fcenLRinv <- fcenLRinvF(CFR.tmax$Partition, CFR.hist.spline) 
+
+ plot(sfun_weather0, 
+     main ="Replace by 10^(-7) in Dong Thap province", 
+     xlab = "Temperature", ylab = "Density",
+     lwd = 2,
+     cex.lab = 1, 
+     cex.axis = 1,
+     cex.main=1,
+     ylim = c(0, 0.3),
+     xlim = c(12, 40))
+lines(f.fcenLRinv$knots, f.fcenLRinv$estimate,
+      col = "blue", lty = 1, lwd = 1)
+abline(v = don_weather0$knots,
+       col = "gray", lty = 2, lwd = 1)
+```
+
+### Replaced by 1e-6
+
+```{r}
+source("FunctionCRF_V6_bin1_11knots_changeZero_10_6.R")
+order = 4 
+ord = 4
+der = 2
+
+yrname <- "1995"
+provincename <- "DONGTHAP"
+
+alpha0 <- 0.0573
+
+weather0 <- LtmaxALL[[yrname]][[provincename]]$tmaxALL[LtmaxALL[[yrname]][[provincename]]$tmaxALL> -10 &
+                                                         LtmaxALL[[yrname]][[provincename]]$tmaxALL<50] 
+typeweathername <- "tmax"
+don_weather0 <- funCS(weather0, "tmax")
+
+
+sfun_weather0 <- stepfun(x = don_weather0$bins[-c(1, length(don_weather0$bins))],
+                         y = don_weather0$density)
+
+CFR.tmax <-  compositionalSplineF(t = don_weather0$midpoint,
+                                  clrf = don_weather0$clrf, 
+                                  knots = don_weather0$knots,
+                                  knots_beta0 = don_weather0$knots,
+                                  w = don_weather0$w, order, der, 
+                                  alpha = alpha0, 
+                                  spline.plot = FALSE, 
+                                  basis.plot = FALSE, 
+                                  tw = "tmax",
+                                  namemain = paste (yrname, provincename))
+n_basic <- dim(CFR.tmax$Zbasis_finner)[2] 
+DT.6 <- c(10^(-6), alpha0, CFR.tmax$ZB_coef)
+CFR.hist.spline <- CFR.tmax$Zbasis_finner %*% CFR.tmax$ZB_coef
+f.fcenLRinv <- fcenLRinvF(CFR.tmax$Partition, CFR.hist.spline) 
+
+ plot(sfun_weather0, 
+     main ="Replace by 10^(-6) in Dong Thap province", 
+     xlab = "Temperature", ylab = "Density",
+     lwd = 2,
+     cex.lab = 1, 
+     cex.axis = 1,
+     cex.main=1,
+     ylim = c(0, 0.3),
+     xlim = c(12, 40))
+lines(f.fcenLRinv$knots, f.fcenLRinv$estimate,
+      col = "blue", lty = 1, lwd = 1)
+abline(v = don_weather0$knots,
+       col = "gray", lty = 2, lwd = 1)
+```
+
+### Replaced by 1e-5
+
+```{r}
+source("FunctionCRF_V6_bin1_11knots_changeZero_10_5.R")
+order = 4 
+ord = 4
+der = 2
+
+yrname <- "1995"
+provincename <- "DONGTHAP"
+
+alpha0 <- 0.0691
+
+weather0 <- LtmaxALL[[yrname]][[provincename]]$tmaxALL[LtmaxALL[[yrname]][[provincename]]$tmaxALL> -10 &
+                                                         LtmaxALL[[yrname]][[provincename]]$tmaxALL<50] 
+typeweathername <- "tmax"
+don_weather0 <- funCS(weather0, "tmax")
+
+
+sfun_weather0 <- stepfun(x = don_weather0$bins[-c(1, length(don_weather0$bins))],
+                         y = don_weather0$density)
+
+CFR.tmax <-  compositionalSplineF(t = don_weather0$midpoint,
+                                  clrf = don_weather0$clrf, 
+                                  knots = don_weather0$knots,
+                                  knots_beta0 = don_weather0$knots,
+                                  w = don_weather0$w, order, der, 
+                                  alpha = alpha0, 
+                                  spline.plot = FALSE, 
+                                  basis.plot = FALSE, 
+                                  tw = "tmax",
+                                  namemain = paste (yrname, provincename))
+n_basic <- dim(CFR.tmax$Zbasis_finner)[2] 
+DT.5 <- c(10^(-5), alpha0, CFR.tmax$ZB_coef)
+CFR.hist.spline <- CFR.tmax$Zbasis_finner %*% CFR.tmax$ZB_coef
+f.fcenLRinv <- fcenLRinvF(CFR.tmax$Partition, CFR.hist.spline) 
+
+ plot(sfun_weather0, 
+     main ="Replace by 10^(-5) in Dong Thap province", 
+     xlab = "Temperature", ylab = "Density",
+     lwd = 2,
+     cex.lab = 1, 
+     cex.axis = 1,
+     cex.main=1,
+     ylim = c(0, 0.3),
+     xlim = c(12, 40))
+lines(f.fcenLRinv$knots, f.fcenLRinv$estimate,
+      col = "blue", lty = 1, lwd = 1)
+abline(v = don_weather0$knots,
+       col = "gray", lty = 2, lwd = 1)
+```
+
+### Replaced by 1e-3
+
+```{r}
+source("FunctionCRF_V6_bin1_11knots_changeZero_10_3.R")
+order = 4 
+ord = 4
+der = 2
+
+yrname <- "1995"
+provincename <- "DONGTHAP"
+
+alpha0 <- 0.8021
+
+weather0 <- LtmaxALL[[yrname]][[provincename]]$tmaxALL[LtmaxALL[[yrname]][[provincename]]$tmaxALL> -10 &
+                                                         LtmaxALL[[yrname]][[provincename]]$tmaxALL<50] 
+typeweathername <- "tmax"
+don_weather0 <- funCS(weather0, "tmax")
+
+
+sfun_weather0 <- stepfun(x = don_weather0$bins[-c(1, length(don_weather0$bins))],
+                         y = don_weather0$density)
+
+CFR.tmax <-  compositionalSplineF(t = don_weather0$midpoint,
+                                  clrf = don_weather0$clrf, 
+                                  knots = don_weather0$knots,
+                                  knots_beta0 = don_weather0$knots,
+                                  w = don_weather0$w, order, der, 
+                                  alpha = alpha0, 
+                                  spline.plot = FALSE, 
+                                  basis.plot = FALSE, 
+                                  tw = "tmax",
+                                  namemain = paste (yrname, provincename))
+n_basic <- dim(CFR.tmax$Zbasis_finner)[2] 
+DT.3 <- c(10^(-3), alpha0, CFR.tmax$ZB_coef)
+CFR.hist.spline <- CFR.tmax$Zbasis_finner %*% CFR.tmax$ZB_coef
+f.fcenLRinv <- fcenLRinvF(CFR.tmax$Partition, CFR.hist.spline) 
+
+ plot(sfun_weather0, 
+     main ="Replace by 10^(-3) in Dong Thap province", 
+     xlab = "Temperature", ylab = "Density",
+     lwd = 2,
+     cex.lab = 1, 
+     cex.axis = 1,
+     cex.main=1,
+     ylim = c(0, 0.3),
+     xlim = c(12, 40))
+lines(f.fcenLRinv$knots, f.fcenLRinv$estimate,
+      col = "blue", lty = 1, lwd = 1)
+abline(v = don_weather0$knots,
+       col = "gray", lty = 2, lwd = 1)
+```
+
+
+## Table ST4
+
+```{r}
+DT <- rbind(DT.8, DT.7)
+DT <- rbind(DT, DT.6)
+DT <- rbind(DT, DT.5)
+DT <- rbind(DT, DT.3)
+DT[, c(3:14)] <- round(DT[, c(3:14)], 2)
+DT
+```
+
